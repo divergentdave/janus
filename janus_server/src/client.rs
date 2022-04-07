@@ -265,7 +265,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_prio3_count() {
         install_test_trace_subscriber();
         let mocked_upload = mock("POST", "/upload").with_status(200).expect(1).create();
@@ -277,7 +277,7 @@ mod tests {
         mocked_upload.assert();
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_prio3_invalid_measurement() {
         install_test_trace_subscriber();
         let vdaf = Prio3Aes128Sum::new(2, 16).unwrap();
@@ -289,7 +289,7 @@ mod tests {
         assert_matches!(client.upload(&65536).await, Err(Error::Vdaf(_)));
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_prio3_http_status_code() {
         install_test_trace_subscriber();
 

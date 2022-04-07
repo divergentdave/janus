@@ -1,3 +1,4 @@
+use async_std::task::JoinHandle;
 use chrono::Duration;
 use janus_server::{
     aggregator::aggregator_server,
@@ -14,7 +15,6 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
-use tokio::task::JoinHandle;
 use url::Url;
 
 fn endpoint_from_socket_addr(addr: &SocketAddr) -> Url {
@@ -116,8 +116,8 @@ async fn setup_test() -> TestCase {
         .await
         .unwrap();
 
-    let leader_task_handle = tokio::spawn(leader_server);
-    let helper_task_handle = tokio::spawn(helper_server);
+    let leader_task_handle = async_std::task::spawn(leader_server);
+    let helper_task_handle = async_std::task::spawn(helper_server);
 
     let client_parameters = ClientParameters::from_task_parameters(&leader_task_parameters);
 
@@ -154,22 +154,11 @@ async fn setup_test() -> TestCase {
 }
 
 async fn teardown_test(test_case: TestCase) {
-    test_case.leader_task_handle.abort();
-    test_case.helper_task_handle.abort();
-
-    assert!(test_case
-        .leader_task_handle
-        .await
-        .unwrap_err()
-        .is_cancelled());
-    assert!(test_case
-        .helper_task_handle
-        .await
-        .unwrap_err()
-        .is_cancelled());
+    assert!(test_case.leader_task_handle.cancel().await.is_none());
+    assert!(test_case.helper_task_handle.cancel().await.is_none());
 }
 
-#[tokio::test]
+#[async_std::test]
 async fn upload() {
     let test_case = setup_test().await;
 

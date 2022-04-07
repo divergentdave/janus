@@ -921,7 +921,7 @@ mod tests {
     };
     use std::collections::BTreeSet;
 
-    #[tokio::test]
+    #[async_std::test]
     async fn roundtrip_task() {
         install_test_trace_subscriber();
         let (ds, _db_handle) = ephemeral_datastore().await;
@@ -1004,7 +1004,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn roundtrip_report() {
         install_test_trace_subscriber();
         let (ds, _db_handle) = ephemeral_datastore().await;
@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(report, retrieved_report);
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn report_not_found() {
         install_test_trace_subscriber();
         let (ds, _db_handle) = ephemeral_datastore().await;
@@ -1088,7 +1088,7 @@ mod tests {
         assert_matches::assert_matches!(rslt, Err(Error::NotFound));
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn roundtrip_report_share() {
         install_test_trace_subscriber();
         let (ds, _db_handle) = ephemeral_datastore().await;
@@ -1163,7 +1163,7 @@ mod tests {
         assert!(got_input_shares.is_none());
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn roundtrip_aggregation_job_by_aggregation_job_id() {
         install_test_trace_subscriber();
         let (ds, _db_handle) = ephemeral_datastore().await;
@@ -1210,7 +1210,7 @@ mod tests {
         assert_eq!(aggregation_job, got_aggregation_job);
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn roundtrip_report_aggregation() {
         install_test_trace_subscriber();
         let (ds, _db_handle) = ephemeral_datastore().await;

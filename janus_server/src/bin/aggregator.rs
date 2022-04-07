@@ -69,7 +69,7 @@ impl Debug for Options {
     }
 }
 
-#[tokio::main]
+#[async_std::main]
 async fn main() -> Result<()> {
     // The configuration file path and any secret values are provided through
     // command line options or environment variables.

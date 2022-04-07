@@ -937,7 +937,7 @@ mod tests {
         hmac::Key::generate(HMAC_SHA256, &SystemRandom::new()).unwrap()
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn invalid_role() {
         install_test_trace_subscriber();
 
@@ -969,7 +969,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn invalid_clock_skew() {
         install_test_trace_subscriber();
 
@@ -998,7 +998,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn hpke_config() {
         install_test_trace_subscriber();
 
@@ -1116,7 +1116,7 @@ mod tests {
             .map(|reply| reply.into_response())
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_filter() {
         install_test_trace_subscriber();
 
@@ -1260,7 +1260,7 @@ mod tests {
     }
 
     // Helper should not expose /upload endpoint
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_filter_helper() {
         install_test_trace_subscriber();
 
@@ -1330,7 +1330,7 @@ mod tests {
         (aggregator, report, datastore, db_handle)
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload() {
         install_test_trace_subscriber();
 
@@ -1355,7 +1355,7 @@ mod tests {
         });
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_wrong_number_of_encrypted_shares() {
         install_test_trace_subscriber();
 
@@ -1370,7 +1370,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_wrong_hpke_config_id() {
         install_test_trace_subscriber();
 
@@ -1403,7 +1403,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn upload_report_in_the_future() {
         install_test_trace_subscriber();
 
@@ -1433,7 +1433,7 @@ mod tests {
         });
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn aggregate_leader() {
         install_test_trace_subscriber();
 
@@ -1484,7 +1484,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn aggregate_wrong_agg_auth_key() {
         install_test_trace_subscriber();
 
@@ -1545,7 +1545,7 @@ mod tests {
         assert_eq!(want_status, parts.status.as_u16());
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn aggregate_init() {
         // Prepare datastore & request.
         install_test_trace_subscriber();
@@ -1673,7 +1673,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn aggregate_init_prep_init_failed() {
         // Prepare datastore & request.
         install_test_trace_subscriber();
@@ -1765,7 +1765,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn aggregate_init_prep_step_failed() {
         // Prepare datastore & request.
         install_test_trace_subscriber();
@@ -1859,7 +1859,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn aggregate_init_duplicated_nonce() {
         install_test_trace_subscriber();
 
