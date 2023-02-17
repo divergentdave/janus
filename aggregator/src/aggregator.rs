@@ -2207,12 +2207,15 @@ impl VdafOps {
 
                     let mut prep_steps = Vec::new();
                     for (ord, share_data) in report_share_data.iter().enumerate() {
+                        let encoded_aggregation_parameter =
+                            aggregation_job.aggregation_parameter().get_encoded();
                         // Verify that we haven't seen this report ID before, and that the report
                         // isn't for a batch interval that has already started collection.
                         let (report_share_exists, conflicting_aggregate_share_jobs) = try_join!(
-                            tx.check_report_share_exists(
+                            tx.check_report_aggregation_exists(
                                 task.id(),
-                                share_data.report_share.metadata().id()
+                                share_data.report_share.metadata().id(),
+                                &encoded_aggregation_parameter,
                             ),
                             Q::get_conflicting_aggregate_share_jobs::<L, C, A>(
                                 tx,
@@ -5477,23 +5480,21 @@ mod tests {
     }
 
     #[tokio::test]
+    // Silence the unit_arg lint so that we can work with dummy_vdaf::Vdaf::InputShare values (whose
+    // type is ()).
+    #[allow(clippy::unit_arg)]
     async fn aggregate_init() {
         // Prepare datastore & request.
         install_test_trace_subscriber();
 
-        let task = TaskBuilder::new(
-            QueryType::TimeInterval,
-            VdafInstance::Prio3Aes128Count,
-            Role::Helper,
-        )
-        .build();
+        let task =
+            TaskBuilder::new(QueryType::TimeInterval, VdafInstance::Fake, Role::Helper).build();
         let clock = MockClock::default();
         let ephemeral_datastore = ephemeral_datastore().await;
         let datastore = Arc::new(ephemeral_datastore.datastore(clock.clone()));
 
-        let vdaf = Prio3::new_aes128_count(2).unwrap();
-        let verify_key: VerifyKey<PRIO3_AES128_VERIFY_KEY_LENGTH> =
-            task.primary_vdaf_verify_key().unwrap();
+        let vdaf = dummy_vdaf::Vdaf::new();
+        let verify_key: VerifyKey<0> = task.primary_vdaf_verify_key().unwrap();
         let hpke_key = current_hpke_key(task.hpke_keys());
 
         // report_share_0 is a "happy path" report.
@@ -5507,18 +5508,17 @@ mod tests {
         let transcript = run_vdaf(
             &vdaf,
             verify_key.as_bytes(),
-            &(),
+            &dummy_vdaf::AggregationParam(0),
             report_metadata_0.id(),
-            &0,
+            &(),
         );
-        let input_share = transcript.input_shares[1].clone();
-        let report_share_0 = generate_helper_report_share::<Prio3Aes128Count>(
+        let report_share_0 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
             *task.id(),
             report_metadata_0,
             hpke_key.config(),
             &transcript.public_share,
             Vec::new(),
-            &input_share,
+            &transcript.input_shares[1],
         );
 
         // report_share_1 fails decryption.
@@ -5529,7 +5529,22 @@ mod tests {
                 .to_batch_interval_start(task.time_precision())
                 .unwrap(),
         );
-        let encrypted_input_share = report_share_0.encrypted_input_share();
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &dummy_vdaf::AggregationParam(0),
+            report_metadata_1.id(),
+            &(),
+        );
+        let report_share_1 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
+            *task.id(),
+            report_metadata_1.clone(),
+            hpke_key.config(),
+            &transcript.public_share,
+            Vec::new(),
+            &transcript.input_shares[1],
+        );
+        let encrypted_input_share = report_share_1.encrypted_input_share();
         let mut corrupted_payload = encrypted_input_share.payload().to_vec();
         corrupted_payload[0] ^= 0xFF;
         let corrupted_input_share = HpkeCiphertext::new(
@@ -5537,7 +5552,6 @@ mod tests {
             encrypted_input_share.encapsulated_key().to_vec(),
             corrupted_payload,
         );
-        #[allow(clippy::unit_arg)]
         let encoded_public_share = transcript.public_share.get_encoded();
         let report_share_1 = ReportShare::new(
             report_metadata_1,
@@ -5553,7 +5567,14 @@ mod tests {
                 .to_batch_interval_start(task.time_precision())
                 .unwrap(),
         );
-        let mut input_share_bytes = input_share.get_encoded();
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &dummy_vdaf::AggregationParam(0),
+            report_metadata_2.id(),
+            &(),
+        );
+        let mut input_share_bytes = transcript.input_shares[1].get_encoded();
         input_share_bytes.push(0); // can no longer be decoded.
         let report_share_2 = generate_helper_report_share_for_plaintext(
             report_metadata_2.clone(),
@@ -5571,6 +5592,13 @@ mod tests {
                 .to_batch_interval_start(task.time_precision())
                 .unwrap(),
         );
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &dummy_vdaf::AggregationParam(0),
+            report_metadata_3.id(),
+            &(),
+        );
         let wrong_hpke_config = loop {
             let hpke_config = generate_test_hpke_config_and_private_key().config().clone();
             if task.hpke_keys().contains_key(hpke_config.id()) {
@@ -5578,16 +5606,17 @@ mod tests {
             }
             break hpke_config;
         };
-        let report_share_3 = generate_helper_report_share::<Prio3Aes128Count>(
+        let report_share_3 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
             *task.id(),
             report_metadata_3,
             &wrong_hpke_config,
             &transcript.public_share,
             Vec::new(),
-            &input_share,
+            &transcript.input_shares[1],
         );
 
-        // report_share_4 has already been aggregated.
+        // report_share_4 has already been aggregated in another aggregation job, with the same
+        // aggregation parameter.
         let report_metadata_4 = ReportMetadata::new(
             random(),
             clock
@@ -5598,18 +5627,17 @@ mod tests {
         let transcript = run_vdaf(
             &vdaf,
             verify_key.as_bytes(),
-            &(),
+            &dummy_vdaf::AggregationParam(0),
             report_metadata_4.id(),
-            &0,
+            &(),
         );
-        let input_share = transcript.input_shares[1].clone();
-        let report_share_4 = generate_helper_report_share::<Prio3Aes128Count>(
+        let report_share_4 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
             *task.id(),
             report_metadata_4,
             hpke_key.config(),
             &transcript.public_share,
             Vec::new(),
-            &input_share,
+            &transcript.input_shares[1],
         );
 
         // report_share_5 falls into a batch that has already been collected.
@@ -5626,18 +5654,17 @@ mod tests {
         let transcript = run_vdaf(
             &vdaf,
             verify_key.as_bytes(),
-            &(),
+            &dummy_vdaf::AggregationParam(0),
             report_metadata_5.id(),
-            &0,
+            &(),
         );
-        let input_share = transcript.input_shares[1].clone();
-        let report_share_5 = generate_helper_report_share::<Prio3Aes128Count>(
+        let report_share_5 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
             *task.id(),
             report_metadata_5,
             hpke_key.config(),
             &transcript.public_share,
             Vec::new(),
-            &input_share,
+            &transcript.input_shares[1],
         );
 
         // report_share_6 fails decoding due to an issue with the public share.
@@ -5649,11 +5676,18 @@ mod tests {
                 .to_batch_interval_start(task.time_precision())
                 .unwrap(),
         );
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &dummy_vdaf::AggregationParam(0),
+            report_metadata_6.id(),
+            &(),
+        );
         let report_share_6 = generate_helper_report_share_for_plaintext(
             report_metadata_6.clone(),
             hpke_key.config(),
             public_share_6.clone(),
-            &input_share.get_encoded(),
+            &transcript.input_shares[1].get_encoded(),
             &InputShareAad::new(*task.id(), report_metadata_6, public_share_6).get_encoded(),
         );
 
@@ -5665,7 +5699,14 @@ mod tests {
                 .to_batch_interval_start(task.time_precision())
                 .unwrap(),
         );
-        let report_share_7 = generate_helper_report_share::<Prio3Aes128Count>(
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &dummy_vdaf::AggregationParam(0),
+            report_metadata_7.id(),
+            &(),
+        );
+        let report_share_7 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
             *task.id(),
             report_metadata_7,
             hpke_key.config(),
@@ -5674,16 +5715,106 @@ mod tests {
                 Extension::new(ExtensionType::Tbd, Vec::new()),
                 Extension::new(ExtensionType::Tbd, Vec::new()),
             ]),
-            &input_share,
+            &transcript.input_shares[0],
         );
 
-        datastore
+        // report_share_8 has already been aggregated in another aggregation job, with a different
+        // aggregation parameter.
+        let report_metadata_8 = ReportMetadata::new(
+            random(),
+            clock
+                .now()
+                .to_batch_interval_start(task.time_precision())
+                .unwrap(),
+        );
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &dummy_vdaf::AggregationParam(1),
+            report_metadata_8.id(),
+            &(),
+        );
+        let report_share_8 = generate_helper_report_share::<dummy_vdaf::Vdaf>(
+            *task.id(),
+            report_metadata_8,
+            hpke_key.config(),
+            &transcript.public_share,
+            Vec::new(),
+            &transcript.input_shares[1],
+        );
+
+        let (conflicting_aggregation_job, non_conflicting_aggregation_job) = datastore
             .run_tx(|tx| {
-                let (task, report_share_4) = (task.clone(), report_share_4.clone());
+                let (task, report_share_4, report_share_8) =
+                    (task.clone(), report_share_4.clone(), report_share_8.clone());
                 Box::pin(async move {
                     tx.put_task(&task).await?;
+
+                    // report_share_4 and report_share_8 are already in the datastore as they were
+                    // referenced by existing aggregation jobs.
                     tx.put_report_share(task.id(), &report_share_4).await?;
-                    tx.put_aggregate_share_job::<PRIO3_AES128_VERIFY_KEY_LENGTH, TimeInterval, Prio3Aes128Count>(
+                    tx.put_report_share(task.id(), &report_share_8).await?;
+
+                    // Put in an aggregation job and report aggregation for report_share_4. It uses
+                    // the same aggregation parameter as the aggregation job this test will later
+                    // add and so should cause report_share_4 to fail to prepare.
+                    let conflicting_aggregation_job = AggregationJob::new(
+                        *task.id(),
+                        random(),
+                        dummy_vdaf::AggregationParam(0),
+                        (),
+                        Interval::new(Time::from_seconds_since_epoch(0), Duration::from_seconds(1))
+                            .unwrap(),
+                        AggregationJobState::InProgress,
+                    );
+                    tx.put_aggregation_job::<0, TimeInterval, dummy_vdaf::Vdaf>(
+                        &conflicting_aggregation_job,
+                    )
+                    .await
+                    .unwrap();
+                    tx.put_report_aggregation::<0, dummy_vdaf::Vdaf>(&ReportAggregation::new(
+                        *task.id(),
+                        *conflicting_aggregation_job.id(),
+                        *report_share_4.metadata().id(),
+                        *report_share_4.metadata().time(),
+                        0,
+                        ReportAggregationState::Start,
+                    ))
+                    .await
+                    .unwrap();
+
+                    // Put in an aggregation job and report aggregation for report_share_8, using a
+                    // a different aggregation parameter. As the aggregation parameter differs,
+                    // report_share_8 should prepare successfully in the aggregation job we'll PUT
+                    // later.
+                    let non_conflicting_aggregation_job = AggregationJob::new(
+                        *task.id(),
+                        random(),
+                        dummy_vdaf::AggregationParam(1),
+                        (),
+                        Interval::new(Time::from_seconds_since_epoch(0), Duration::from_seconds(1))
+                            .unwrap(),
+                        AggregationJobState::InProgress,
+                    );
+                    tx.put_aggregation_job::<0, TimeInterval, dummy_vdaf::Vdaf>(
+                        &non_conflicting_aggregation_job,
+                    )
+                    .await
+                    .unwrap();
+                    tx.put_report_aggregation::<0, dummy_vdaf::Vdaf>(&ReportAggregation::new(
+                        *task.id(),
+                        *non_conflicting_aggregation_job.id(),
+                        *report_share_8.metadata().id(),
+                        *report_share_8.metadata().time(),
+                        0,
+                        ReportAggregationState::Start,
+                    ))
+                    .await
+                    .unwrap();
+
+                    // Put in an aggregate share job for the interval that report_share_5 falls into
+                    // which should cause it to later fail to prepare.
+                    tx.put_aggregate_share_job::<0, TimeInterval, dummy_vdaf::Vdaf>(
                         &AggregateShareJob::new(
                             *task.id(),
                             Interval::new(
@@ -5691,20 +5822,22 @@ mod tests {
                                 *task.time_precision(),
                             )
                             .unwrap(),
-                            (),
-                            AggregateShare::from(Vec::from([Field64::from(7)])),
+                            dummy_vdaf::AggregationParam(0),
+                            dummy_vdaf::AggregateShare(0),
                             0,
                             ReportIdChecksum::default(),
                         ),
                     )
-                    .await
+                    .await?;
+
+                    Ok((conflicting_aggregation_job, non_conflicting_aggregation_job))
                 })
             })
             .await
             .unwrap();
 
         let request = AggregationJobInitializeReq::new(
-            Vec::new(),
+            dummy_vdaf::AggregationParam(0).get_encoded(),
             PartialBatchSelector::new_time_interval(),
             Vec::from([
                 report_share_0.clone(),
@@ -5715,6 +5848,7 @@ mod tests {
                 report_share_5.clone(),
                 report_share_6.clone(),
                 report_share_7.clone(),
+                report_share_8.clone(),
             ]),
         );
 
@@ -5751,7 +5885,7 @@ mod tests {
         let aggregate_resp = AggregationJobResp::get_decoded(&body_bytes).unwrap();
 
         // Validate response.
-        assert_eq!(aggregate_resp.prepare_steps().len(), 8);
+        assert_eq!(aggregate_resp.prepare_steps().len(), 9);
 
         let prepare_step_0 = aggregate_resp.prepare_steps().get(0).unwrap();
         assert_eq!(prepare_step_0.report_id(), report_share_0.metadata().id());
@@ -5768,13 +5902,6 @@ mod tests {
         assert_eq!(prepare_step_2.report_id(), report_share_2.metadata().id());
         assert_matches!(
             prepare_step_2.result(),
-            &PrepareStepResult::Failed(ReportShareError::VdafPrepError)
-        );
-
-        let prepare_step_6 = aggregate_resp.prepare_steps().get(6).unwrap();
-        assert_eq!(prepare_step_6.report_id(), report_share_6.metadata().id());
-        assert_matches!(
-            prepare_step_6.result(),
             &PrepareStepResult::Failed(ReportShareError::VdafPrepError)
         );
 
@@ -5813,29 +5940,44 @@ mod tests {
             &PrepareStepResult::Failed(ReportShareError::UnrecognizedMessage),
         );
 
+        let prepare_step_8 = aggregate_resp.prepare_steps().get(8).unwrap();
+        assert_eq!(prepare_step_8.report_id(), report_share_8.metadata().id());
+        assert_matches!(prepare_step_8.result(), &PrepareStepResult::Continued(..));
+
         // Check aggregation job in datastore.
         let aggregation_jobs = datastore
             .run_tx(|tx| {
                 let task = task.clone();
                 Box::pin(async move {
-                    tx.get_aggregation_jobs_for_task::<
-                        PRIO3_AES128_VERIFY_KEY_LENGTH,
-                        TimeInterval,
-                        Prio3Aes128Count,
-                    >(task.id())
+                    tx.get_aggregation_jobs_for_task::<0, TimeInterval, dummy_vdaf::Vdaf>(task.id())
                         .await
                 })
             })
             .await
             .unwrap();
-        assert_eq!(aggregation_jobs.len(), 1);
-        assert_eq!(aggregation_jobs[0].task_id(), task.id());
-        assert_eq!(aggregation_jobs[0].id(), &aggregation_job_id);
-        assert_eq!(aggregation_jobs[0].partial_batch_identifier(), &());
-        assert_eq!(
-            aggregation_jobs[0].state(),
-            &AggregationJobState::InProgress
-        );
+
+        assert_eq!(aggregation_jobs.len(), 3);
+
+        let mut saw_conflicting_aggregation_job = false;
+        let mut saw_non_conflicting_aggregation_job = false;
+        let mut saw_new_aggregation_job = false;
+        for aggregation_job in aggregation_jobs {
+            if aggregation_job.eq(&conflicting_aggregation_job) {
+                saw_conflicting_aggregation_job = true;
+            } else if aggregation_job.eq(&non_conflicting_aggregation_job) {
+                saw_non_conflicting_aggregation_job = true;
+            } else if aggregation_job.task_id().eq(task.id())
+                && aggregation_job.id().eq(&aggregation_job_id)
+                && aggregation_job.partial_batch_identifier().eq(&())
+                && aggregation_job.state().eq(&AggregationJobState::InProgress)
+            {
+                saw_new_aggregation_job = true;
+            }
+        }
+
+        assert!(saw_conflicting_aggregation_job);
+        assert!(saw_non_conflicting_aggregation_job);
+        assert!(saw_new_aggregation_job);
     }
 
     #[tokio::test]

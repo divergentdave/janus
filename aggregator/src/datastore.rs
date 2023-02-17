@@ -1300,35 +1300,6 @@ impl<C: Clock> Transaction<'_, C> {
         Ok(())
     }
 
-    /// check_report_share_exists checks if a report share has been recorded in the datastore, given
-    /// its associated task ID & report ID.
-    ///
-    /// This method is intended for use by aggregators acting in the helper role.
-    #[tracing::instrument(skip(self), err)]
-    pub async fn check_report_share_exists(
-        &self,
-        task_id: &TaskId,
-        report_id: &ReportId,
-    ) -> Result<bool, Error> {
-        let stmt = self
-            .prepare_cached(
-                "SELECT 1 FROM client_reports JOIN tasks ON tasks.id = client_reports.task_id
-                WHERE tasks.task_id = $1
-                  AND client_reports.report_id = $2",
-            )
-            .await?;
-        Ok(self
-            .query_opt(
-                &stmt,
-                &[
-                    /* task_id */ &task_id.as_ref(),
-                    /* report_id */ &report_id.as_ref(),
-                ],
-            )
-            .await
-            .map(|row| row.is_some())?)
-    }
-
     /// put_report_share stores a report share, given its associated task ID.
     ///
     /// This method is intended for use by aggregators acting in the helper role; notably, it does
@@ -1344,7 +1315,8 @@ impl<C: Clock> Transaction<'_, C> {
         let stmt = self
             .prepare_cached(
                 "INSERT INTO client_reports (task_id, report_id, client_timestamp)
-                VALUES ((SELECT id FROM tasks WHERE task_id = $1), $2, $3)",
+                VALUES ((SELECT id FROM tasks WHERE task_id = $1), $2, $3)
+                ON CONFLICT DO NOTHING",
             )
             .await?;
         self.execute(
@@ -1613,6 +1585,36 @@ impl<C: Clock> Transaction<'_, C> {
             )
             .await?,
         )
+    }
+
+    /// Check whether the report has ever been aggregated with the given parameter.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn check_report_aggregation_exists(
+        &self,
+        task_id: &TaskId,
+        report_id: &ReportId,
+        aggregation_param: &[u8],
+    ) -> Result<bool, Error> {
+        let stmt = self.prepare_cached(
+            "SELECT 1 FROM report_aggregations
+                JOIN client_reports ON client_reports.id = report_aggregations.client_report_id
+                JOIN aggregation_jobs ON aggregation_jobs.id = report_aggregations.aggregation_job_id
+                WHERE client_reports.task_id = (SELECT id FROM tasks WHERE task_id = $1)
+                    AND client_reports.report_id = $2
+                    AND aggregation_jobs.aggregation_param = $3"
+            )
+        .await?;
+        Ok(self
+            .query_opt(
+                &stmt,
+                &[
+                    /* task_id */ &task_id.as_ref(),
+                    /* report_id */ &report_id.as_ref(),
+                    /* aggregation_param */ &aggregation_param,
+                ],
+            )
+            .await
+            .map(|row| row.is_some())?)
     }
 
     /// get_report_aggregation gets a report aggregation by ID.
@@ -5962,35 +5964,22 @@ mod tests {
             ),
         );
 
-        let got_report_share_exists = ds
-            .run_tx(|tx| {
-                let (task, report_share) = (task.clone(), report_share.clone());
-                Box::pin(async move {
-                    tx.put_task(&task).await?;
-                    let report_share_exists = tx
-                        .check_report_share_exists(task.id(), report_share.metadata().id())
-                        .await?;
-                    tx.put_report_share(task.id(), &report_share).await?;
-                    Ok(report_share_exists)
-                })
-            })
-            .await
-            .unwrap();
-        assert!(!got_report_share_exists);
+        ds.run_tx(|tx| {
+            let (task, report_share) = (task.clone(), report_share.clone());
+            Box::pin(async move {
+                tx.put_task(&task).await?;
+                tx.put_report_share(task.id(), &report_share).await?;
 
-        let (
-            got_report_share_exists,
-            got_task_id,
-            got_extensions,
-            got_leader_input_share,
-            got_helper_input_share,
-        ) = ds
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        let (got_task_id, got_extensions, got_leader_input_share, got_helper_input_share) = ds
             .run_tx(|tx| {
-                let (task, report_share_metadata) = (task.clone(), report_share.metadata().clone());
+                let report_share_metadata = report_share.metadata().clone();
                 Box::pin(async move {
-                    let report_share_exists = tx
-                        .check_report_share_exists(task.id(), report_share_metadata.id())
-                        .await?;
                     let row = tx
                         .query_one(
                             "SELECT
@@ -6018,7 +6007,6 @@ mod tests {
                         row.get("helper_encrypted_input_share");
 
                     Ok((
-                        report_share_exists,
                         task_id,
                         maybe_extensions,
                         maybe_leader_input_share,
@@ -6029,11 +6017,22 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(got_report_share_exists);
         assert_eq!(task.id(), &got_task_id);
         assert!(got_extensions.is_none());
         assert!(got_leader_input_share.is_none());
         assert!(got_helper_input_share.is_none());
+
+        // Put the same report share again. This should not cause an error.
+        ds.run_tx(|tx| {
+            let (task_id, report_share) = (*task.id(), report_share.clone());
+            Box::pin(async move {
+                tx.put_report_share(&task_id, &report_share).await.unwrap();
+
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -6695,6 +6694,114 @@ mod tests {
                 .unwrap();
             assert_eq!(Some(new_report_aggregation), got_report_aggregation);
         }
+    }
+
+    #[tokio::test]
+    async fn check_report_aggregation_exists() {
+        install_test_trace_subscriber();
+        let ephemeral_datastore = ephemeral_datastore().await;
+        let ds = ephemeral_datastore.datastore(MockClock::default());
+        let task = TaskBuilder::new(
+            task::QueryType::TimeInterval,
+            VdafInstance::Fake,
+            Role::Helper,
+        )
+        .build();
+
+        ds.put_task(&task).await.unwrap();
+
+        let aggregation_job_id = random();
+        let report_id = ReportId::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+
+        ds.run_tx(|tx| {
+            let task_id = *task.id();
+            Box::pin(async move {
+                tx.put_aggregation_job(&AggregationJob::<0, TimeInterval, dummy_vdaf::Vdaf>::new(
+                    task_id,
+                    aggregation_job_id,
+                    dummy_vdaf::AggregationParam(0),
+                    (),
+                    Interval::new(Time::from_seconds_since_epoch(0), Duration::from_seconds(1))
+                        .unwrap(),
+                    AggregationJobState::InProgress,
+                ))
+                .await?;
+                tx.put_report_share(
+                    &task_id,
+                    &ReportShare::new(
+                        ReportMetadata::new(report_id, Time::from_seconds_since_epoch(12345)),
+                        Vec::from("public_share"),
+                        HpkeCiphertext::new(
+                            HpkeConfigId::from(12),
+                            Vec::from("encapsulated_context_0"),
+                            Vec::from("payload_0"),
+                        ),
+                    ),
+                )
+                .await?;
+
+                let report_aggregation = ReportAggregation::<0, dummy_vdaf::Vdaf>::new(
+                    task_id,
+                    aggregation_job_id,
+                    report_id,
+                    Time::from_seconds_since_epoch(12345),
+                    0,
+                    ReportAggregationState::Start,
+                );
+                tx.put_report_aggregation(&report_aggregation).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        ds.run_tx(|tx| {
+            let task_id = *task.id();
+            Box::pin(async move {
+                assert!(tx
+                    .check_report_aggregation_exists(
+                        &task_id,
+                        &report_id,
+                        &dummy_vdaf::AggregationParam(0).get_encoded(),
+                    )
+                    .await
+                    .unwrap());
+
+                // Wrong task ID
+                assert!(!tx
+                    .check_report_aggregation_exists(
+                        &random(),
+                        &report_id,
+                        &dummy_vdaf::AggregationParam(0).get_encoded(),
+                    )
+                    .await
+                    .unwrap());
+
+                // Wrong report ID
+                assert!(!tx
+                    .check_report_aggregation_exists(
+                        &task_id,
+                        &random(),
+                        &dummy_vdaf::AggregationParam(0).get_encoded(),
+                    )
+                    .await
+                    .unwrap());
+
+                // Wrong aggregation param
+                assert!(!tx
+                    .check_report_aggregation_exists(
+                        &task_id,
+                        &report_id,
+                        &dummy_vdaf::AggregationParam(1).get_encoded(),
+                    )
+                    .await
+                    .unwrap());
+
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
