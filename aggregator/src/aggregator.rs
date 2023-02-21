@@ -2246,7 +2246,6 @@ impl VdafOps {
                         {
                             match error {
                                 datastore::Error::MutationTargetAlreadyExisted => {
-                                    tracing::error!("replayed report");
                                     prep_steps.push(PrepareStep::new(
                                         *share_data.report_share.metadata().id(),
                                         PrepareStepResult::Failed(ReportShareError::ReportReplayed),
