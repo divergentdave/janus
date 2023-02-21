@@ -1349,17 +1349,10 @@ impl<C: Clock> Transaction<'_, C> {
         // https://stackoverflow.com/questions/34762732/how-to-find-out-if-an-upsert-was-an-update-with-postgresql-9-5-upsert
         // https://www.cybertec-postgresql.com/en/whats-in-an-xmax/
         let stmt = self
-            .prepare_cached(
-                "INSERT INTO client_reports (task_id, report_id, client_timestamp)
-                VALUES ((SELECT id FROM tasks WHERE task_id = $1), $2, $3)
-                ON CONFLICT (task_id, report_id) DO UPDATE
-                  SET client_timestamp = client_reports.client_timestamp
-                    WHERE excluded.client_timestamp != client_reports.client_timestamp
-                RETURNING xmax != 0 AS row_updated",
-            )
+            .prepare_cached("SELECT put_report_share($1, $2, $3) AS success")
             .await?;
         let row = self
-            .query_opt(
+            .query_one(
                 &stmt,
                 &[
                     /* task_id */ &task_id.get_encoded(),
@@ -1370,13 +1363,10 @@ impl<C: Clock> Transaction<'_, C> {
             )
             .await?;
 
-        match row {
-            // A row was *updated* (not the same as *inserted*), indicating a mutation attempt
-            Some(row) if row.get::<_, bool>("row_updated") => {
-                Err(Error::MutationTargetAlreadyExisted)
-            }
-            // Either a new row was inserted or there was a conflict that didn't result in an update
-            None | Some(_) => Ok(()),
+        if !row.get::<_, bool>("success") {
+            Err(Error::MutationTargetAlreadyExisted)
+        } else {
+            Ok(())
         }
     }
 

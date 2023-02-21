@@ -89,6 +89,37 @@ CREATE TABLE client_reports(
 CREATE INDEX client_reports_task_unaggregated ON client_reports(task_id) WHERE aggregation_started = FALSE;
 CREATE INDEX client_reports_task_and_timestamp_index ON client_reports(task_id, client_timestamp);
 
+CREATE FUNCTION put_report_share(task_id bytea, report_id bytea, client_timestamp timestamp) RETURNS boolean AS $$
+/*
+Checks if a helper report share record is present, and stores a record if it
+is not. Returns true if a new record was stored, or if a matching record was
+found. Returns false if a record with a different timestamp was found.
+*/
+DECLARE
+    task_id_pkey bigint;
+    existing_timestamp timestamp;
+BEGIN
+    SELECT id INTO STRICT task_id_pkey FROM tasks WHERE tasks.task_id = put_report_share.task_id;
+
+    SELECT client_reports.client_timestamp INTO existing_timestamp FROM client_reports
+    WHERE client_reports.task_id = task_id_pkey
+    AND client_reports.report_id = put_report_share.report_id;
+
+    IF FOUND THEN
+        IF existing_timestamp = client_timestamp THEN
+            RETURN true;
+        ELSE
+            RETURN false;
+        END IF;
+    ELSE
+        INSERT INTO client_reports (task_id, report_id, client_timestamp)
+        VALUES (task_id_pkey, report_id, client_timestamp);
+
+        RETURN true;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Specifies the possible state of an aggregation job.
 CREATE TYPE AGGREGATION_JOB_STATE AS ENUM(
     'IN_PROGRESS', -- at least one included report is in a non-terminal (START, WAITING) state, processing can continue
