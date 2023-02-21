@@ -919,6 +919,30 @@ impl<C: Clock> Transaction<'_, C> {
     }
 
     #[cfg(feature = "test-util")]
+    pub async fn get_helper_client_reports_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Vec<ReportMetadata>, Error> {
+        let stmt = self
+            .prepare_cached(
+                "SELECT client_reports.report_id, client_reports.client_timestamp
+                FROM client_reports
+                JOIN tasks ON tasks.id = client_reports.task_id WHERE tasks.task_id = $1",
+            )
+            .await?;
+        self.query(&stmt, &[&task_id.as_ref()])
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok(ReportMetadata::new(
+                    row.get_bytea_and_convert::<ReportId>("report_id")?,
+                    Time::from_naive_date_time(&row.get("client_timestamp")),
+                ))
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "test-util")]
     pub async fn get_client_reports_for_task<const L: usize, A: vdaf::Aggregator<L>>(
         &self,
         vdaf: &A,
@@ -1306,30 +1330,54 @@ impl<C: Clock> Transaction<'_, C> {
     /// not store extensions, public_share, or input_shares, as these are not required to be stored
     /// for the helper workflow (and the helper never observes the entire set of encrypted input
     /// shares, so it could not record the full client report in any case).
+    ///
+    /// Returns `Err(Error::MutationTargetAlreadyExisted)` if an attempt to mutate an existing row
+    /// (e.g., changing the timestamp for a known report ID) is detected.
     #[tracing::instrument(skip(self), err)]
     pub async fn put_report_share(
         &self,
         task_id: &TaskId,
         report_share: &ReportShare,
     ) -> Result<(), Error> {
+        // On conflict, we update the row, but only if the incoming client timestamp (excluded)
+        // doesn't match the existing one.
+        // xmax is a PostgreSQL system column whose value is "the identity (transaction ID) of the
+        // deleting transaction, or zero for an undeleted row version." The UPDATE in ON CONFLICT DO
+        // UPDATE counts as deleting a tuple, and so xmax will be zero if there was no conflict (new
+        // report share or not an attempt to mutate an existing one) and nonzero otherwise.
+        // https://www.postgresql.org/docs/14/ddl-system-columns.html
+        // https://stackoverflow.com/questions/34762732/how-to-find-out-if-an-upsert-was-an-update-with-postgresql-9-5-upsert
+        // https://www.cybertec-postgresql.com/en/whats-in-an-xmax/
         let stmt = self
             .prepare_cached(
                 "INSERT INTO client_reports (task_id, report_id, client_timestamp)
                 VALUES ((SELECT id FROM tasks WHERE task_id = $1), $2, $3)
-                ON CONFLICT DO NOTHING",
+                ON CONFLICT (task_id, report_id) DO UPDATE
+                  SET client_timestamp = client_reports.client_timestamp
+                    WHERE excluded.client_timestamp != client_reports.client_timestamp
+                RETURNING xmax != 0 AS row_updated",
             )
             .await?;
-        self.execute(
-            &stmt,
-            &[
-                /* task_id */ &task_id.get_encoded(),
-                /* report_id */ &report_share.metadata().id().as_ref(),
-                /* client_timestamp */
-                &report_share.metadata().time().as_naive_date_time()?,
-            ],
-        )
-        .await?;
-        Ok(())
+        let row = self
+            .query_opt(
+                &stmt,
+                &[
+                    /* task_id */ &task_id.get_encoded(),
+                    /* report_id */ &report_share.metadata().id().as_ref(),
+                    /* client_timestamp */
+                    &report_share.metadata().time().as_naive_date_time()?,
+                ],
+            )
+            .await?;
+
+        match row {
+            // A row was *updated* (not the same as *inserted*), indicating a mutation attempt
+            Some(row) if row.get::<_, bool>("row_updated") => {
+                Err(Error::MutationTargetAlreadyExisted)
+            }
+            // Either a new row was inserted or there was a conflict that didn't result in an update
+            None | Some(_) => Ok(()),
+        }
     }
 
     /// get_aggregation_job retrieves an aggregation job by ID.

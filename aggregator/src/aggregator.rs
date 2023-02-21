@@ -2211,7 +2211,7 @@ impl VdafOps {
                             aggregation_job.aggregation_parameter().get_encoded();
                         // Verify that we haven't seen this report ID before, and that the report
                         // isn't for a batch interval that has already started collection.
-                        let (report_share_exists, conflicting_aggregate_share_jobs) = try_join!(
+                        let (report_aggregation_exists, conflicting_aggregate_share_jobs) = try_join!(
                             tx.check_report_aggregation_exists(
                                 task.id(),
                                 share_data.report_share.metadata().id(),
@@ -2224,7 +2224,7 @@ impl VdafOps {
                                 share_data.report_share.metadata()
                             ),
                         )?;
-                        if report_share_exists {
+                        if report_aggregation_exists {
                             prep_steps.push(PrepareStep::new(
                                 *share_data.report_share.metadata().id(),
                                 PrepareStepResult::Failed(ReportShareError::ReportReplayed),
@@ -2240,8 +2240,23 @@ impl VdafOps {
                         }
 
                         // Write client report & report aggregation.
-                        tx.put_report_share(task.id(), &share_data.report_share)
-                            .await?;
+                        if let Err(error) = tx
+                            .put_report_share(task.id(), &share_data.report_share)
+                            .await
+                        {
+                            match error {
+                                datastore::Error::MutationTargetAlreadyExisted => {
+                                    tracing::error!("replayed report");
+                                    prep_steps.push(PrepareStep::new(
+                                        *share_data.report_share.metadata().id(),
+                                        PrepareStepResult::Failed(ReportShareError::ReportReplayed),
+                                    ));
+                                    continue;
+                                }
+
+                                e => return Err(e),
+                            }
+                        }
                         tx.put_report_aggregation(&ReportAggregation::<L, A>::new(
                             *task.id(),
                             *aggregation_job.id(),
@@ -5978,6 +5993,162 @@ mod tests {
         assert!(saw_conflicting_aggregation_job);
         assert!(saw_non_conflicting_aggregation_job);
         assert!(saw_new_aggregation_job);
+    }
+
+    #[allow(clippy::unit_arg)]
+    #[tokio::test]
+    async fn aggregate_init_change_report_timestamp() {
+        install_test_trace_subscriber();
+
+        let task =
+            TaskBuilder::new(QueryType::TimeInterval, VdafInstance::Fake, Role::Helper).build();
+        let clock = MockClock::default();
+        let ephemeral_datastore = ephemeral_datastore().await;
+        let datastore = Arc::new(ephemeral_datastore.datastore(clock.clone()));
+        let filter =
+            aggregator_filter(Arc::clone(&datastore), clock.clone(), Config::default()).unwrap();
+
+        datastore.put_task(&task).await.unwrap();
+
+        let vdaf = dummy_vdaf::Vdaf::new();
+        let verify_key: VerifyKey<0> = task.primary_vdaf_verify_key().unwrap();
+        let hpke_key = current_hpke_key(task.hpke_keys());
+        let aggregation_parameter = dummy_vdaf::AggregationParam(0);
+        let other_aggregation_parameter = dummy_vdaf::AggregationParam(1);
+        assert_ne!(aggregation_parameter, other_aggregation_parameter);
+
+        let report_metadata = ReportMetadata::new(
+            random(),
+            clock
+                .now()
+                .to_batch_interval_start(task.time_precision())
+                .unwrap(),
+        );
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &aggregation_parameter,
+            report_metadata.id(),
+            &(),
+        );
+        let report_share = generate_helper_report_share::<dummy_vdaf::Vdaf>(
+            *task.id(),
+            report_metadata.clone(),
+            hpke_key.config(),
+            &transcript.public_share,
+            Vec::new(),
+            &transcript.input_shares[1].clone(),
+        );
+
+        // This report has the same ID as the previous one, but a different timestamp.
+        let mutated_timestamp_report_metadata = ReportMetadata::new(
+            *report_metadata.id(),
+            clock.now().add(task.time_precision()).unwrap(),
+        );
+        let transcript = run_vdaf(
+            &vdaf,
+            verify_key.as_bytes(),
+            &other_aggregation_parameter,
+            mutated_timestamp_report_metadata.id(),
+            &(),
+        );
+        let mutated_timestamp_report_share = generate_helper_report_share::<dummy_vdaf::Vdaf>(
+            *task.id(),
+            mutated_timestamp_report_metadata.clone(),
+            hpke_key.config(),
+            &transcript.public_share,
+            Vec::new(),
+            &transcript.input_shares[1].clone(),
+        );
+
+        // Send an aggregate job with the first report share in it
+        let request = AggregationJobInitializeReq::new(
+            aggregation_parameter.get_encoded(),
+            PartialBatchSelector::new_time_interval(),
+            Vec::from([report_share.clone()]),
+        );
+
+        let response = warp::test::request()
+            .method("PUT")
+            .path(task.aggregation_job_uri(&random()).unwrap().path())
+            .header(
+                "DAP-Auth-Token",
+                task.primary_aggregator_auth_token().as_bytes(),
+            )
+            .header(
+                CONTENT_TYPE,
+                AggregationJobInitializeReq::<TimeInterval>::MEDIA_TYPE,
+            )
+            .body(request.get_encoded())
+            .filter(&filter)
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            AggregationJobResp::MEDIA_TYPE
+        );
+
+        // Send another aggregate job re-using the same report ID but with a different timestamp. It
+        // should be flagged as a replay.
+        let request = AggregationJobInitializeReq::new(
+            other_aggregation_parameter.get_encoded(),
+            PartialBatchSelector::new_time_interval(),
+            Vec::from([mutated_timestamp_report_share.clone()]),
+        );
+
+        let mut response = warp::test::request()
+            .method("PUT")
+            .path(task.aggregation_job_uri(&random()).unwrap().path())
+            .header(
+                "DAP-Auth-Token",
+                task.primary_aggregator_auth_token().as_bytes(),
+            )
+            .header(
+                CONTENT_TYPE,
+                AggregationJobInitializeReq::<TimeInterval>::MEDIA_TYPE,
+            )
+            .body(request.get_encoded())
+            .filter(&filter)
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            AggregationJobResp::MEDIA_TYPE
+        );
+        let body_bytes = body::to_bytes(response.body_mut()).await.unwrap();
+        let aggregate_resp = AggregationJobResp::get_decoded(&body_bytes).unwrap();
+
+        assert_eq!(aggregate_resp.prepare_steps().len(), 1);
+
+        let prepare_step = aggregate_resp.prepare_steps().get(0).unwrap();
+        assert_eq!(prepare_step.report_id(), report_share.metadata().id());
+        assert_matches!(
+            prepare_step.result(),
+            &PrepareStepResult::Failed(ReportShareError::ReportReplayed)
+        );
+
+        // The attempt to mutate the report share timestamp should not cause any change in the
+        // datastore.
+        let client_reports = datastore
+            .run_tx(|tx| {
+                let task_id = *task.id();
+                Box::pin(async move {
+                    let reports = tx
+                        .get_helper_client_reports_for_task(&task_id)
+                        .await
+                        .unwrap();
+
+                    Ok(reports)
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(client_reports.len(), 1);
+        assert_eq!(client_reports[0], report_metadata);
     }
 
     #[tokio::test]
