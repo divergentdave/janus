@@ -29,7 +29,7 @@ reqwest = { version = "0.11.4", default-features = false, features = ["rustls-tl
 ring = "0.16.20"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.79"
-serde_yaml = "0.8.23"
+serde_yaml = "0.9.19"
 structopt = "0.3.26"
 testcontainers = "0.13.0"
 thiserror = "1.0"
