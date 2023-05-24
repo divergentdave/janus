@@ -33,7 +33,7 @@ use prio::{
 };
 use reqwest::Method;
 use std::{collections::HashSet, hash::Hash, sync::Arc, time::Duration};
-use tokio::try_join;
+use tokio::{join, try_join};
 use tracing::{info, warn};
 
 #[derive(Derivative)]
@@ -680,11 +680,14 @@ impl AggregationJobDriver {
                 let lease = Arc::clone(&lease);
 
                 Box::pin(async move {
-                    let (unwritable_ra_report_ids, unwritable_ba_report_ids, _) = try_join!(
+                    let (unwritable_ra_report_ids_res, unwritable_ba_report_ids_res, release_res) = join!(
                         aggregation_job_writer.write(tx, Arc::clone(&vdaf)),
                         accumulator.flush_to_datastore(tx, &vdaf),
                         tx.release_aggregation_job(&lease),
-                    )?;
+                    );
+                    let unwritable_ra_report_ids=unwritable_ra_report_ids_res?;
+                    let unwritable_ba_report_ids=unwritable_ba_report_ids_res?;
+                    release_res?;
 
                     // Currently, writes can fail in two ways: when writing to the batch
                     // aggregations, or when writing the batch/aggregation job/report aggregations.

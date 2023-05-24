@@ -1,7 +1,7 @@
 //! In-memory accumulation of output shares.
 
 use derivative::Derivative;
-use futures::future::try_join_all;
+use futures::future::join_all;
 use janus_aggregator_core::{
     datastore::{
         self,
@@ -137,7 +137,7 @@ impl<const SEED_SIZE: usize, Q: AccumulableQueryType, A: vdaf::Aggregator<SEED_S
     ) -> Result<HashSet<ReportId>, datastore::Error> {
         let unmergeable_report_ids = Arc::new(Mutex::new(HashSet::new()));
 
-        try_join_all(self.aggregations.values().map(|data| {
+        join_all(self.aggregations.values().map(|data| {
             let unmergeable_report_ids = Arc::clone(&unmergeable_report_ids);
             async move {
                 match tx
@@ -202,7 +202,9 @@ impl<const SEED_SIZE: usize, Q: AccumulableQueryType, A: vdaf::Aggregator<SEED_S
                 }
             }
         }))
-        .await?;
+        .await
+        .into_iter()
+        .collect::<Result<_, _>>()?;
 
         // Unwrap safety: at this point, `unmergeable_report_ids` is the only instance of this Arc,
         // so `try_unwrap().unwrap()` will succeed. `into_inner().unwrap()` can only panic if code
