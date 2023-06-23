@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
+use chrono::NaiveDateTime;
 use janus_aggregator::{
     aggregator::{
         self, aggregation_job_creator::AggregationJobCreator,
@@ -17,7 +18,7 @@ use janus_aggregator::{
     trace::{install_trace_subscriber, TokioConsoleConfiguration, TraceConfiguration},
 };
 use janus_aggregator_core::{
-    datastore::{models::AggregationJobState, test_util::ephemeral_datastore},
+    datastore::{self, models::AggregationJobState, test_util::ephemeral_datastore},
     task::{QueryType, Task},
     SecretBytes,
 };
@@ -333,6 +334,7 @@ async fn main() -> Result<()> {
         println!("{} aggregation jobs with state {:?}", count, state);
     }
 
+    let now = clock.now().as_naive_date_time()?;
     let row = tx
         .query_one(
             "SELECT COUNT(*) FROM aggregation_jobs
@@ -340,13 +342,44 @@ async fn main() -> Result<()> {
             WHERE tasks.aggregator_role = 'LEADER'
             AND aggregation_jobs.state = 'IN_PROGRESS'
             AND aggregation_jobs.lease_expiry <= $1",
-            &[&clock.now().as_naive_date_time()?],
+            &[&now],
         )
         .await?;
     println!(
         "{} aggregation jobs are eligible for acquisition",
         row.get::<_, i64>(0)
     );
+
+    let rows = tx
+        .query(
+            "EXPLAIN UPDATE aggregation_jobs SET
+                lease_expiry = $1,
+                lease_token = gen_random_bytes(16),
+                lease_attempts = lease_attempts + 1
+            FROM tasks
+            WHERE tasks.id = aggregation_jobs.task_id
+            AND aggregation_jobs.id IN (
+                SELECT aggregation_jobs.id FROM aggregation_jobs
+                JOIN tasks on tasks.id = aggregation_jobs.task_id
+                WHERE tasks.aggregator_role = 'LEADER'
+                AND aggregation_jobs.state = 'IN_PROGRESS'
+                AND aggregation_jobs.lease_expiry <= $2
+                FOR UPDATE SKIP LOCKED LIMIT $3
+            )
+            RETURNING tasks.task_id, tasks.query_type, tasks.vdaf,
+                      aggregation_jobs.aggregation_job_id, aggregation_jobs.lease_token,
+                      aggregation_jobs.lease_attempts",
+            &[
+                &add_naive_date_time_duration(&now, &StdDuration::from_secs(600))?,
+                &now,
+                &10i64,
+            ],
+        )
+        .await?;
+    println!("Query plan (EXPLAIN)");
+    for row in rows {
+        println!("{}", row.get::<_, &str>(0));
+    }
 
     drop(tx);
     drop(conn);
@@ -381,4 +414,17 @@ async fn main() -> Result<()> {
     })?;
 
     Ok(())
+}
+
+/// Add a [`std::time::Duration`] to a [`chrono::NaiveDateTime`].
+fn add_naive_date_time_duration(
+    time: &NaiveDateTime,
+    duration: &StdDuration,
+) -> Result<NaiveDateTime, datastore::Error> {
+    time.checked_add_signed(chrono::Duration::from_std(*duration).map_err(|_| {
+        datastore::Error::TimeOverflow("overflow converting duration to signed duration")
+    })?)
+    .ok_or(datastore::Error::TimeOverflow(
+        "overflow adding duration to time",
+    ))
 }
