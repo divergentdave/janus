@@ -1806,13 +1806,7 @@ impl<C: Clock> Transaction<'_, C> {
         // per-row basis.
         let stmt = self
             .prepare_cached(
-                "UPDATE aggregation_jobs SET
-                    lease_expiry = $1,
-                    lease_token = gen_random_bytes(16),
-                    lease_attempts = lease_attempts + 1
-                FROM tasks
-                WHERE tasks.id = aggregation_jobs.task_id
-                AND aggregation_jobs.id IN (
+                "WITH incomplete_jobs AS (
                     SELECT aggregation_jobs.id FROM aggregation_jobs
                     JOIN tasks on tasks.id = aggregation_jobs.task_id
                     WHERE tasks.aggregator_role = 'LEADER'
@@ -1820,6 +1814,13 @@ impl<C: Clock> Transaction<'_, C> {
                     AND aggregation_jobs.lease_expiry <= $2
                     FOR UPDATE SKIP LOCKED LIMIT $3
                 )
+                UPDATE aggregation_jobs SET
+                    lease_expiry = $1,
+                    lease_token = gen_random_bytes(16),
+                    lease_attempts = lease_attempts + 1
+                FROM tasks
+                WHERE tasks.id = aggregation_jobs.task_id
+                AND aggregation_jobs.id IN (SELECT id FROM incomplete_jobs)
                 RETURNING tasks.task_id, tasks.query_type, tasks.vdaf,
                           aggregation_jobs.aggregation_job_id, aggregation_jobs.lease_token,
                           aggregation_jobs.lease_attempts",
