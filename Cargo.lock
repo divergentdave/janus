@@ -2234,6 +2234,7 @@ dependencies = [
  "janus_messages",
  "k8s-openapi",
  "kube",
+ "opentelemetry",
  "prio",
  "rand",
  "reqwest",
@@ -2242,6 +2243,9 @@ dependencies = [
  "tempfile",
  "testcontainers",
  "tokio",
+ "tracing",
+ "trillium",
+ "trillium-tokio",
  "url",
 ]
 

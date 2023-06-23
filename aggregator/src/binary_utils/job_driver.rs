@@ -101,6 +101,11 @@ where
             .with_description("Time spent acquiring jobs.")
             .with_unit(Unit::new("seconds"))
             .init();
+        let job_acquire_jobs_histogram = self
+            .meter
+            .u64_histogram("janus_job_acquire_jobs")
+            .with_description("Number of incomplete jobs acquired at once.")
+            .init();
         let job_step_time_histogram = self
             .meter
             .f64_histogram("janus_job_step_time")
@@ -139,6 +144,7 @@ where
                     &mut job_discovery_delay,
                     max_acquire_count,
                     &job_acquire_time_histogram,
+                    &job_acquire_jobs_histogram,
                 )
                 .await;
 
@@ -198,6 +204,7 @@ where
         job_discovery_delay: &mut Duration,
         max_acquire_count: usize,
         job_acquire_time_histogram: &Histogram<f64>,
+        job_acquire_jobs_histogram: &Histogram<u64>,
     ) -> Vec<Lease<AcquiredJob>> {
         debug!(%max_acquire_count, "Acquiring jobs");
         let start = Instant::now();
@@ -222,6 +229,11 @@ where
             &Context::current(),
             start.elapsed().as_secs_f64(),
             &[KeyValue::new("status", "success")],
+        );
+        job_acquire_jobs_histogram.record(
+            &Context::current(),
+            leases.len().try_into().unwrap_or(u64::MAX),
+            &[],
         );
         if leases.is_empty() {
             debug!("No jobs available");
