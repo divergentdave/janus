@@ -78,27 +78,6 @@ async fn main() -> Result<()> {
     let helper_ephemeral_datastore = ephemeral_datastore().await;
     let helper_datastore = Arc::new(helper_ephemeral_datastore.datastore(clock).await);
 
-    // Disable autovacuum on various tables.
-    let leader_db_pool = leader_ephemeral_datastore.pool();
-    let conn = leader_db_pool.get().await?;
-    conn.execute(
-        "ALTER TABLE client_reports SET (autovacuum_enabled = false)",
-        &[],
-    )
-    .await?;
-    conn.execute(
-        "ALTER TABLE report_aggregations SET (autovacuum_enabled = false)",
-        &[],
-    )
-    .await?;
-    conn.execute(
-        "ALTER TABLE aggregation_jobs SET (autovacuum_enabled = false)",
-        &[],
-    )
-    .await?;
-    drop(conn);
-    drop(leader_db_pool);
-
     // Run two aggregators in-process.
     let leader_aggregator_config = aggregator::Config {
         max_upload_batch_size: 100,
