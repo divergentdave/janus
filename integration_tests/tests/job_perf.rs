@@ -3,12 +3,14 @@
 
 use std::{
     net::Ipv4Addr,
+    str::FromStr,
     sync::Arc,
     time::{Duration as StdDuration, Instant},
 };
 
 use anyhow::{Context as _, Result};
 use chrono::NaiveDateTime;
+use deadpool_postgres::{Manager, Pool};
 use janus_aggregator::{
     aggregator::{
         self, aggregation_job_creator::AggregationJobCreator,
@@ -18,7 +20,12 @@ use janus_aggregator::{
     trace::{install_trace_subscriber, TokioConsoleConfiguration, TraceConfiguration},
 };
 use janus_aggregator_core::{
-    datastore::{self, models::AggregationJobState, test_util::ephemeral_datastore},
+    datastore::{
+        self,
+        models::AggregationJobState,
+        test_util::{ephemeral_datastore, EphemeralDatastore},
+        Datastore,
+    },
     task::{QueryType, Task},
     SecretBytes,
 };
@@ -41,6 +48,7 @@ use opentelemetry::{
 use prio::vdaf::prio3::Prio3;
 use rand::{distributions::Standard, random, thread_rng, Rng};
 use tokio::time::interval_at;
+use tokio_postgres::{Config, NoTls};
 use tracing::{error, info};
 use trillium::Headers;
 use trillium_tokio::Stopper;
@@ -75,9 +83,31 @@ async fn main() -> Result<()> {
 
     // Set up databases.
     let leader_ephemeral_datastore = ephemeral_datastore().await;
-    let leader_datastore = Arc::new(leader_ephemeral_datastore.datastore(clock).await);
+    let leader_base_datastore = leader_ephemeral_datastore.datastore(clock).await;
     let helper_ephemeral_datastore = ephemeral_datastore().await;
-    let helper_datastore = Arc::new(helper_ephemeral_datastore.datastore(clock).await);
+    let helper_base_datastore = helper_ephemeral_datastore.datastore(clock).await;
+
+    // Add application_name to connection strings.
+    let leader_aggregator_datastore =
+        datastore_with_application_name(&leader_ephemeral_datastore, clock, "leader-aggregator")
+            .await;
+    let leader_aggregation_job_creator_datastore = datastore_with_application_name(
+        &leader_ephemeral_datastore,
+        clock,
+        "leader-aggregation_job_creator",
+    )
+    .await;
+    let leader_aggregation_job_driver_datastore = Arc::new(
+        datastore_with_application_name(
+            &leader_ephemeral_datastore,
+            clock,
+            "leader-aggregation_job_driver",
+        )
+        .await,
+    );
+    let helper_aggregator_datastore =
+        datastore_with_application_name(&helper_ephemeral_datastore, clock, "helper-aggregator")
+            .await;
 
     // Run two aggregators in-process.
     let leader_aggregator_config = aggregator::Config {
@@ -86,7 +116,7 @@ async fn main() -> Result<()> {
         batch_aggregation_shard_count: 32,
     };
     let leader_aggregator_handler = aggregator_handler(
-        Arc::clone(&leader_datastore),
+        Arc::new(leader_aggregator_datastore),
         clock,
         leader_aggregator_config,
     )?;
@@ -104,7 +134,7 @@ async fn main() -> Result<()> {
         batch_aggregation_shard_count: 32,
     };
     let helper_aggregator_handler = aggregator_handler(
-        Arc::clone(&helper_datastore),
+        Arc::new(helper_aggregator_datastore),
         clock,
         helper_aggregator_config,
     )?;
@@ -173,7 +203,7 @@ async fn main() -> Result<()> {
         Vec::from([random()]),
         [leader_hpke_keypair.clone()],
     )?;
-    leader_datastore.put_task(&leader_task).await?;
+    leader_base_datastore.put_task(&leader_task).await?;
 
     // Store the task in the helper's database.
     let helper_hpke_keypair = generate_hpke_config_and_private_key(
@@ -200,11 +230,11 @@ async fn main() -> Result<()> {
         Vec::new(),
         [helper_hpke_keypair.clone()],
     )?;
-    helper_datastore.put_task(&helper_task).await?;
+    helper_base_datastore.put_task(&helper_task).await?;
 
     // Run the aggregation job creator.
     let aggregation_job_creator = Arc::new(AggregationJobCreator::new(
-        leader_ephemeral_datastore.datastore(clock).await,
+        leader_aggregation_job_creator_datastore,
         StdDuration::from_secs(3600),
         StdDuration::from_secs(60),
         10,
@@ -240,10 +270,11 @@ async fn main() -> Result<()> {
         10,
         StdDuration::from_secs(60),
         aggregation_job_driver.make_incomplete_job_acquirer_callback(
-            Arc::clone(&leader_datastore),
+            Arc::clone(&leader_aggregation_job_driver_datastore),
             StdDuration::from_secs(600),
         ),
-        aggregation_job_driver.make_job_stepper_callback(Arc::clone(&leader_datastore), 10),
+        aggregation_job_driver
+            .make_job_stepper_callback(Arc::clone(&leader_aggregation_job_driver_datastore), 10),
     ));
     let aggregation_job_driver_join_handle =
         tokio::spawn(leader_stopper.stop_future(job_driver.run()));
@@ -427,4 +458,32 @@ fn add_naive_date_time_duration(
     .ok_or(datastore::Error::TimeOverflow(
         "overflow adding duration to time",
     ))
+}
+
+/// Produce a [`Datastore`] from an [`EphemeralDatastore`] with `application_name` set in the
+/// connection string.
+async fn datastore_with_application_name<C>(
+    ephemeral_datastore: &EphemeralDatastore,
+    clock: C,
+    application_name: &str,
+) -> Datastore<C>
+where
+    C: Clock,
+{
+    Datastore::new(
+        Pool::builder(Manager::new(
+            Config::from_str(&format!(
+                "{}?application_name={application_name}",
+                ephemeral_datastore.connection_string()
+            ))
+            .unwrap(),
+            NoTls,
+        ))
+        .build()
+        .unwrap(),
+        ephemeral_datastore.crypter(),
+        clock,
+    )
+    .await
+    .unwrap()
 }

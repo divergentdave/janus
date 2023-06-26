@@ -36,11 +36,13 @@ url = { version = "2.4.0", features = ["serde"] }
 
 [dev-dependencies]
 chrono.workspace = true
+deadpool-postgres = "0.10.5"
 http = "0.2"
 itertools.workspace = true
 janus_collector = { workspace = true, features = ["test-util"] }
 opentelemetry.workspace = true
 tempfile = "3"
+tokio-postgres = "0.7.8"
 tracing = "0.1.37"
 trillium = "0.2.9"
 trillium-tokio = "0.3.1"
