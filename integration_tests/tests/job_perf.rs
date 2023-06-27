@@ -47,7 +47,7 @@ use opentelemetry::{
 };
 use prio::vdaf::prio3::Prio3;
 use rand::{distributions::Standard, random, thread_rng, Rng};
-use tokio::time::interval_at;
+use tokio::time::{interval, interval_at};
 use tokio_postgres::{Config, NoTls};
 use tracing::{error, info};
 use trillium::Headers;
@@ -315,6 +315,21 @@ async fn main() -> Result<()> {
     }
     drop(client);
 
+    // Analyze the aggregation_jobs table periodically.
+    let leader_db_pool = leader_ephemeral_datastore.pool();
+    let analyze_join_handle = tokio::spawn({
+        let stopper = leader_stopper.clone();
+        let pool = leader_db_pool.clone();
+        let mut interval = interval(StdDuration::from_secs(60));
+        async move {
+            let conn = pool.get().await?;
+            while stopper.stop_future(interval.tick()).await.is_some() {
+                conn.execute("ANALYZE aggregation_jobs", &[]).await?;
+            }
+            Ok::<_, datastore::Error>(())
+        }
+    });
+
     // Let uploads and aggregations run for a while.
     tokio::time::sleep(StdDuration::from_secs(300)).await;
 
@@ -327,6 +342,7 @@ async fn main() -> Result<()> {
     }
 
     leader_stopper.stop();
+    analyze_join_handle.await??;
     info!("waiting for aggregation job creator task to finish");
     aggregation_job_creator_join_handle.await?;
     info!("waiting for aggregation job driver task to finish");
@@ -339,7 +355,6 @@ async fn main() -> Result<()> {
     helper_aggregator_server.await;
 
     // Inspect database.
-    let leader_db_pool = leader_ephemeral_datastore.pool();
     let mut conn = leader_db_pool.get().await?;
     let tx = conn
         .build_transaction()
