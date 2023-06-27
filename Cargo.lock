@@ -2224,6 +2224,7 @@ dependencies = [
  "chrono",
  "deadpool-postgres",
  "futures",
+ "futures-util",
  "hex",
  "http",
  "itertools",

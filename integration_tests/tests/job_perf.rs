@@ -2,7 +2,10 @@
 //! `acquire_incomplete_aggregation_jobs()`.
 
 use std::{
+    any::Any,
+    convert::Infallible,
     net::Ipv4Addr,
+    panic::{panic_any, AssertUnwindSafe},
     str::FromStr,
     sync::Arc,
     time::{Duration as StdDuration, Instant},
@@ -11,6 +14,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use chrono::NaiveDateTime;
 use deadpool_postgres::{Manager, Pool};
+use futures_util::future::FutureExt;
 use janus_aggregator::{
     aggregator::{
         self, aggregation_job_creator::AggregationJobCreator,
@@ -75,6 +79,7 @@ async fn main() -> Result<()> {
 
     // Common utilities
     let clock = RealClock::default();
+    let short_circuit_stopper = Stopper::new();
     let client_stopper = Stopper::new();
     let leader_stopper = Stopper::new();
     let helper_stopper = Stopper::new();
@@ -276,8 +281,20 @@ async fn main() -> Result<()> {
         aggregation_job_driver
             .make_job_stepper_callback(Arc::clone(&leader_aggregation_job_driver_datastore), 10),
     ));
-    let aggregation_job_driver_join_handle =
-        tokio::spawn(leader_stopper.stop_future(job_driver.run()));
+    let aggregation_job_driver_join_handle = tokio::spawn({
+        let short_circuit_stopper = short_circuit_stopper.clone();
+        let future = AssertUnwindSafe(leader_stopper.stop_future(job_driver.run())).catch_unwind();
+        async move {
+            let res: Result<Option<Infallible>, Box<dyn Any + Send + 'static>> = future.await;
+            match res {
+                Ok(_option) => {}
+                Err(panic) => {
+                    short_circuit_stopper.stop();
+                    panic_any(panic);
+                }
+            }
+        }
+    });
 
     // Set up client.
     let client_parameters = ClientParameters::new(task_id, aggregator_endpoints, time_precision);
@@ -331,7 +348,9 @@ async fn main() -> Result<()> {
     });
 
     // Let uploads and aggregations run for a while.
-    tokio::time::sleep(StdDuration::from_secs(300)).await;
+    short_circuit_stopper
+        .stop_future(tokio::time::sleep(StdDuration::from_secs(300)))
+        .await;
 
     // Perform a graceful shutdown. Stop the clients first, before we stop the leader, because
     // otherwise their upload futures may get sidetracked into HTTP retry loops.

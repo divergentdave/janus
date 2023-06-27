@@ -37,6 +37,7 @@ url = { version = "2.4.0", features = ["serde"] }
 [dev-dependencies]
 chrono.workspace = true
 deadpool-postgres = "0.10.5"
+futures-util = "0.3.28"
 http = "0.2"
 itertools.workspace = true
 janus_collector = { workspace = true, features = ["test-util"] }
