@@ -6,6 +6,7 @@ use std::{
     convert::Infallible,
     net::Ipv4Addr,
     panic::{panic_any, AssertUnwindSafe},
+    process::Command,
     str::FromStr,
     sync::Arc,
     time::{Duration as StdDuration, Instant},
@@ -27,7 +28,7 @@ use janus_aggregator_core::{
     datastore::{
         self,
         models::AggregationJobState,
-        test_util::{ephemeral_datastore, EphemeralDatastore},
+        test_util::{ephemeral_datastore, EphemeralDatabase, EphemeralDatastore},
         Datastore,
     },
     task::{QueryType, Task},
@@ -351,6 +352,16 @@ async fn main() -> Result<()> {
     short_circuit_stopper
         .stop_future(tokio::time::sleep(StdDuration::from_secs(300)))
         .await;
+
+    // Save database logs.
+    let ephemeral_database = EphemeralDatabase::shared().await;
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "docker logs {} > postgres_stdout.log 2> postgres_stderr.log",
+            ephemeral_database.container_id()
+        ))
+        .status()?;
 
     // Perform a graceful shutdown. Stop the clients first, before we stop the leader, because
     // otherwise their upload futures may get sidetracked into HTTP retry loops.

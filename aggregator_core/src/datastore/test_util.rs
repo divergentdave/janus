@@ -9,26 +9,28 @@ use sqlx::{
     Connection, PgConnection,
 };
 use std::{
+    collections::HashMap,
     path::PathBuf,
     str::FromStr,
     sync::{Arc, Barrier, Weak},
     thread::{self, JoinHandle},
 };
-use testcontainers::{images::postgres::Postgres, RunnableImage};
+use testcontainers::{core::WaitFor, Image, ImageArgs, RunnableImage};
 use tokio::sync::{oneshot, Mutex};
 use tokio_postgres::{connect, Config, NoTls};
 use tracing::trace;
 
 use super::SUPPORTED_SCHEMA_VERSIONS;
 
-struct EphemeralDatabase {
+pub struct EphemeralDatabase {
     port_number: u16,
     shutdown_barrier: Arc<Barrier>,
     join_handle: Option<JoinHandle<()>>,
+    container_id: String,
 }
 
 impl EphemeralDatabase {
-    async fn shared() -> Arc<Self> {
+    pub async fn shared() -> Arc<Self> {
         // (once Weak::new is stabilized as a const function, replace this with a normal static
         // variable)
         lazy_static! {
@@ -46,31 +48,33 @@ impl EphemeralDatabase {
     }
 
     async fn start() -> Self {
-        let (port_tx, port_rx) = oneshot::channel();
+        let (metadata_tx, metadata_rx) = oneshot::channel();
         let shutdown_barrier = Arc::new(Barrier::new(2));
         let join_handle = thread::spawn({
             let shutdown_barrier = Arc::clone(&shutdown_barrier);
             move || {
                 // Start an instance of Postgres running in a container.
                 let container_client = testcontainers::clients::Cli::default();
-                let db_container = container_client
-                    .run(RunnableImage::from(Postgres::default()).with_tag("14-alpine"));
+                let db_container =
+                    container_client.run(RunnableImage::from(AutoExplainPostgres::default()));
+                let container_id = db_container.id().to_string();
                 const POSTGRES_DEFAULT_PORT: u16 = 5432;
                 let port_number = db_container.get_host_port_ipv4(POSTGRES_DEFAULT_PORT);
                 trace!("Postgres container is up with port {port_number}");
-                port_tx.send(port_number).unwrap();
+                metadata_tx.send((port_number, container_id)).unwrap();
 
                 // Wait for the barrier as a shutdown signal.
                 shutdown_barrier.wait();
                 trace!("Shutting down Postgres container with port {port_number}");
             }
         });
-        let port_number = port_rx.await.unwrap();
+        let (port_number, container_id) = metadata_rx.await.unwrap();
 
         Self {
             port_number,
             shutdown_barrier,
             join_handle: Some(join_handle),
+            container_id,
         }
     }
 
@@ -79,6 +83,10 @@ impl EphemeralDatabase {
             "postgres://postgres:postgres@127.0.0.1:{}/{db_name}",
             self.port_number
         )
+    }
+
+    pub fn container_id(&self) -> &str {
+        &self.container_id
     }
 }
 
@@ -250,4 +258,67 @@ pub fn generate_aead_key_bytes() -> Vec<u8> {
 pub fn generate_aead_key() -> LessSafeKey {
     let unbound_key = UnboundKey::new(&AES_128_GCM, &generate_aead_key_bytes()).unwrap();
     LessSafeKey::new(unbound_key)
+}
+
+struct AutoExplainPostgres {
+    env_vars: HashMap<String, String>,
+}
+
+impl Default for AutoExplainPostgres {
+    fn default() -> Self {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("POSTGRES_DB".to_owned(), "postgres".to_owned());
+        env_vars.insert("POSTGRES_HOST_AUTH_METHOD".to_owned(), "trust".to_owned());
+        Self { env_vars }
+    }
+}
+
+impl Image for AutoExplainPostgres {
+    type Args = AutoExplainPostgresArgs;
+
+    fn name(&self) -> String {
+        "postgres".to_owned()
+    }
+
+    fn tag(&self) -> String {
+        "14-alpine".to_owned()
+    }
+
+    fn ready_conditions(&self) -> Vec<WaitFor> {
+        vec![WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        )]
+    }
+
+    fn env_vars(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
+        Box::new(self.env_vars.iter())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AutoExplainPostgresArgs {
+    arguments: Vec<String>,
+}
+
+impl Default for AutoExplainPostgresArgs {
+    fn default() -> Self {
+        Self {
+            arguments: Vec::from([
+                "-c".into(),
+                "shared_preload_libraries=auto_explain".into(),
+                "-c".into(),
+                "auto_explain.log_min_duration=0".into(),
+                "-c".into(),
+                "auto_explain.log_analyze=true".into(),
+                "-c".into(),
+                "auto_explain.log_format=json".into(),
+            ]),
+        }
+    }
+}
+
+impl ImageArgs for AutoExplainPostgresArgs {
+    fn into_iterator(self) -> Box<dyn Iterator<Item = String>> {
+        Box::new(self.arguments.into_iter())
+    }
 }
