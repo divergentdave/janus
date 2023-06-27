@@ -242,9 +242,10 @@ where
         }
         assert!(
             leases.len() <= max_acquire_count,
-            "Acquired {} jobs exceeding maximum of {}",
+            "Acquired {} jobs exceeding maximum of {}\n{:?}",
             leases.len(),
-            max_acquire_count
+            max_acquire_count,
+            leases
         );
         debug!(acquired_job_count = leases.len(), "Acquired jobs");
         *job_discovery_delay = Duration::ZERO;
