@@ -15,7 +15,7 @@ use std::{
     sync::{Arc, Barrier, Weak},
     thread::{self, JoinHandle},
 };
-use testcontainers::{core::WaitFor, Image, ImageArgs, RunnableImage};
+use testcontainers::{core::WaitFor, images::postgres::Postgres, Image, ImageArgs, RunnableImage};
 use tokio::sync::{oneshot, Mutex};
 use tokio_postgres::{connect, Config, NoTls};
 use tracing::trace;
@@ -55,8 +55,8 @@ impl EphemeralDatabase {
             move || {
                 // Start an instance of Postgres running in a container.
                 let container_client = testcontainers::clients::Cli::default();
-                let db_container =
-                    container_client.run(RunnableImage::from(AutoExplainPostgres::default()));
+                let db_container = container_client
+                    .run(RunnableImage::from(Postgres::default()).with_tag("14-alpine"));
                 let container_id = db_container.id().to_string();
                 const POSTGRES_DEFAULT_PORT: u16 = 5432;
                 let port_number = db_container.get_host_port_ipv4(POSTGRES_DEFAULT_PORT);
