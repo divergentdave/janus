@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use chrono::NaiveDateTime;
 use deadpool_postgres::{Manager, Pool};
-use futures_util::future::FutureExt;
+use futures_util::{future::FutureExt, StreamExt};
 use janus_aggregator::{
     aggregator::{
         self, aggregation_job_creator::AggregationJobCreator,
@@ -348,6 +348,142 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Dump the lock manager periodically.
+    let dump_locks_handle = tokio::spawn({
+        let stopper = leader_stopper.clone();
+        let pool = leader_db_pool.clone();
+        let mut interval = interval(StdDuration::from_secs(30));
+        AssertUnwindSafe(async move {
+            let conn = pool.get().await?;
+            let statement = conn
+                .prepare_cached(
+                    "SELECT
+    locktype,
+    relation::bigint AS relation_oid,
+    relation::regclass::text AS relation_name,
+    page IS NOT NULL AS is_page,
+    tuple IS NOT NULL AS is_tuple,
+    mode,
+    granted,
+    pg_stat_activity.backend_type,
+    pg_stat_activity.application_name,
+    pg_stat_activity.wait_event_type,
+    pg_stat_activity.wait_event,
+    pg_stat_activity.state,
+    pg_stat_activity.query
+FROM pg_locks
+LEFT JOIN pg_stat_activity
+ON pg_locks.pid = pg_stat_activity.pid
+WHERE pg_locks.pid != pg_backend_pid();",
+                )
+                .await?;
+            let column_headings = [
+                "locktype",
+                "relation_oid",
+                "relation_name",
+                "page",
+                "tuple",
+                "mode",
+                "granted",
+                "backend_type",
+                "application_name",
+                "wait_event_type",
+                "wait_event",
+                "state",
+                "query",
+            ];
+            while stopper.stop_future(interval.tick()).await.is_some() {
+                println!("Lock states:");
+                let mut row_stream = Box::pin(conn.query_raw(&statement, [""; 0]).await?);
+                let mut column_widths = column_headings
+                    .iter()
+                    .map(|heading| heading.len())
+                    .collect::<Vec<usize>>();
+                let mut table = Vec::new();
+                let mut update_table = |row: [String; 13]| {
+                    for (column_width, string) in column_widths.iter_mut().zip(row.iter()) {
+                        if string.len() > *column_width {
+                            *column_width = string.len();
+                        }
+                    }
+                    table.push(row);
+                };
+                while let Some(row_res) = row_stream.next().await {
+                    let row = row_res?;
+                    update_table([
+                        row.get::<_, &str>(0).to_owned(),
+                        row.get::<_, Option<i64>>(1)
+                            .as_ref()
+                            .map_or_else(String::new, ToString::to_string),
+                        row.get::<_, Option<&str>>(2)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, bool>(3).to_string(),
+                        row.get::<_, bool>(4).to_string(),
+                        row.get::<_, &str>(5).to_owned(),
+                        row.get::<_, bool>(6).to_string(),
+                        row.get::<_, Option<&str>>(7)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, &str>(8).to_owned(),
+                        row.get::<_, Option<&str>>(9)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(10)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(11)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(12)
+                            .map_or_else(String::new, |query| {
+                                const QUERY_SIZE_LIMIT: usize = 30;
+                                if query.chars().nth(QUERY_SIZE_LIMIT).is_some() {
+                                    let mut abbreviated =
+                                        String::with_capacity(QUERY_SIZE_LIMIT + 3);
+                                    abbreviated.extend(query.chars().take(QUERY_SIZE_LIMIT).map(
+                                        |char| {
+                                            if char == '\n' {
+                                                ' '
+                                            } else {
+                                                char
+                                            }
+                                        },
+                                    ));
+                                    abbreviated.push_str("...");
+                                    abbreviated
+                                } else {
+                                    query.replace('\n', " ")
+                                }
+                            }),
+                    ]);
+                }
+                for (heading, width) in column_headings.iter().zip(column_widths.iter()) {
+                    print!("{0:1$} | ", heading, width);
+                }
+                println!();
+                for row in table {
+                    for (value, width) in row.iter().zip(column_widths.iter()) {
+                        print!("{0:1$} | ", value, width);
+                    }
+                    println!();
+                }
+                println!();
+            }
+            Ok::<_, datastore::Error>(())
+        })
+        .catch_unwind()
+        .map({
+            let short_circuit_stopper = short_circuit_stopper.clone();
+            move |res| match res {
+                Err(reason) => {
+                    short_circuit_stopper.stop();
+                    panic_any(reason);
+                }
+                Ok(res @ Err(_)) => {
+                    short_circuit_stopper.stop();
+                    res
+                }
+                Ok(Ok(())) => Ok(()),
+            }
+        })
+    });
+
     // Let uploads and aggregations run for a while.
     short_circuit_stopper
         .stop_future(tokio::time::sleep(StdDuration::from_secs(300)))
@@ -373,6 +509,7 @@ async fn main() -> Result<()> {
 
     leader_stopper.stop();
     analyze_join_handle.await??;
+    dump_locks_handle.await??;
     info!("waiting for aggregation job creator task to finish");
     aggregation_job_creator_join_handle.await?;
     info!("waiting for aggregation job driver task to finish");
