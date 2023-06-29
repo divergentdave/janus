@@ -754,7 +754,7 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
                 WHERE tasks.aggregator_role = 'LEADER'
                 AND aggregation_jobs.state = 'IN_PROGRESS'
                 AND aggregation_jobs.lease_expiry <= $2
-                FOR UPDATE SKIP LOCKED LIMIT $3
+                FOR UPDATE OF aggregation_jobs SKIP LOCKED LIMIT $3
             )
             UPDATE aggregation_jobs SET
                 lease_expiry = $1,
