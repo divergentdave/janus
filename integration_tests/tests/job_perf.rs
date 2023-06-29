@@ -5,7 +5,7 @@ use std::{
     any::Any,
     convert::Infallible,
     net::Ipv4Addr,
-    panic::{panic_any, AssertUnwindSafe},
+    panic::{resume_unwind, AssertUnwindSafe},
     process::Command,
     str::FromStr,
     sync::Arc,
@@ -291,7 +291,7 @@ async fn main() -> Result<()> {
                 Ok(_option) => {}
                 Err(panic) => {
                     short_circuit_stopper.stop();
-                    panic_any(panic);
+                    resume_unwind(panic);
                 }
             }
         }
@@ -566,7 +566,7 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
             move |res| match res {
                 Err(reason) => {
                     short_circuit_stopper.stop();
-                    panic_any(reason);
+                    resume_unwind(reason);
                 }
                 Ok(res @ Err(_)) => {
                     short_circuit_stopper.stop();
@@ -579,7 +579,7 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
 
     // Let uploads and aggregations run for a while.
     short_circuit_stopper
-        .stop_future(tokio::time::sleep(StdDuration::from_secs(300)))
+        .stop_future(tokio::time::sleep(StdDuration::from_secs(60 * 5)))
         .await;
 
     // Save database logs.
