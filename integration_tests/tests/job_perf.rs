@@ -395,11 +395,30 @@ WHERE pg_locks.pid != pg_backend_pid();",
                 "query",
             ];
 
-            let row_locks_statement = conn
+            let row_locks_1_statement = conn
                 .prepare_cached(
                     "WITH row_locks AS (
     SELECT modes, pids
     FROM pgrowlocks('aggregation_jobs')
+)
+SELECT
+    mode,
+    pg_stat_activity.backend_type,
+    pg_stat_activity.application_name,
+    pg_stat_activity.wait_event_type,
+    pg_stat_activity.wait_event,
+    pg_stat_activity.state,
+    pg_stat_activity.query
+FROM row_locks, unnest(modes, pids) AS unnested_row_locks (mode, pid)
+LEFT JOIN pg_stat_activity
+ON unnested_row_locks.pid = pg_stat_activity.pid",
+                )
+                .await?;
+            let row_locks_2_statement = conn
+                .prepare_cached(
+                    "WITH row_locks AS (
+    SELECT modes, pids
+    FROM pgrowlocks('tasks')
 )
 SELECT
     mode,
@@ -485,6 +504,7 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
                             }),
                     ]);
                 }
+                println!("In-memory lock manager:");
                 for (heading, width) in lock_mgr_column_headings.iter().zip(column_widths.iter()) {
                     print!("{0:1$} | ", heading, width);
                 }
@@ -497,7 +517,8 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
                 }
                 println!();
 
-                let mut row_stream = Box::pin(conn.query_raw(&row_locks_statement, [""; 0]).await?);
+                let mut row_stream =
+                    Box::pin(conn.query_raw(&row_locks_1_statement, [""; 0]).await?);
                 let mut column_widths = row_locks_column_headings
                     .iter()
                     .map(|heading| heading.len())
@@ -517,7 +538,8 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
                         row.get::<_, &str>(0).to_owned(),
                         row.get::<_, Option<&str>>(1)
                             .map_or_else(String::new, ToOwned::to_owned),
-                        row.get::<_, &str>(2).to_owned(),
+                        row.get::<_, Option<&str>>(2)
+                            .map_or_else(String::new, ToOwned::to_owned),
                         row.get::<_, Option<&str>>(3)
                             .map_or_else(String::new, ToOwned::to_owned),
                         row.get::<_, Option<&str>>(4)
@@ -547,6 +569,72 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
                             }),
                     ]);
                 }
+                println!("Row locks, aggregation_jobs");
+                for (heading, width) in row_locks_column_headings.iter().zip(column_widths.iter()) {
+                    print!("{0:1$} | ", heading, width);
+                }
+                println!();
+                for row in table {
+                    for (value, width) in row.iter().zip(column_widths.iter()) {
+                        print!("{0:1$} | ", value, width);
+                    }
+                    println!();
+                }
+                println!();
+
+                let mut row_stream =
+                    Box::pin(conn.query_raw(&row_locks_2_statement, [""; 0]).await?);
+                let mut column_widths = row_locks_column_headings
+                    .iter()
+                    .map(|heading| heading.len())
+                    .collect::<Vec<usize>>();
+                let mut table = Vec::new();
+                let mut update_table = |row: [String; 7]| {
+                    for (column_width, string) in column_widths.iter_mut().zip(row.iter()) {
+                        if string.len() > *column_width {
+                            *column_width = string.len();
+                        }
+                    }
+                    table.push(row);
+                };
+                while let Some(row_res) = row_stream.next().await {
+                    let row = row_res?;
+                    update_table([
+                        row.get::<_, &str>(0).to_owned(),
+                        row.get::<_, Option<&str>>(1)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(2)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(3)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(4)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(5)
+                            .map_or_else(String::new, ToOwned::to_owned),
+                        row.get::<_, Option<&str>>(6)
+                            .map_or_else(String::new, |query| {
+                                const QUERY_SIZE_LIMIT: usize = 30;
+                                if query.chars().nth(QUERY_SIZE_LIMIT).is_some() {
+                                    let mut abbreviated =
+                                        String::with_capacity(QUERY_SIZE_LIMIT + 3);
+                                    abbreviated.extend(query.chars().take(QUERY_SIZE_LIMIT).map(
+                                        |char| {
+                                            if char == '\n' {
+                                                ' '
+                                            } else {
+                                                char
+                                            }
+                                        },
+                                    ));
+                                    abbreviated.push_str("...");
+                                    abbreviated
+                                } else {
+                                    query.replace('\n', " ")
+                                }
+                            }),
+                    ]);
+                }
+                println!("Row locks, tasks");
                 for (heading, width) in row_locks_column_headings.iter().zip(column_widths.iter()) {
                     print!("{0:1$} | ", heading, width);
                 }
