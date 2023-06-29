@@ -454,7 +454,8 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
                         row.get::<_, bool>(6).to_string(),
                         row.get::<_, Option<&str>>(7)
                             .map_or_else(String::new, ToOwned::to_owned),
-                        row.get::<_, &str>(8).to_owned(),
+                        row.get::<_, Option<&str>>(8)
+                            .map_or_else(String::new, ToOwned::to_owned),
                         row.get::<_, Option<&str>>(9)
                             .map_or_else(String::new, ToOwned::to_owned),
                         row.get::<_, Option<&str>>(10)
