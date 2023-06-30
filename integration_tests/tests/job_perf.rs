@@ -261,41 +261,49 @@ async fn main() -> Result<()> {
     .build();
     let meter = controller.meter("test");
 
-    // Run the aggregation job driver.
-    let aggregation_job_driver = Arc::new(AggregationJobDriver::new(
-        reqwest::Client::new(),
-        &NoopMeterProvider::new().meter("janus_aggregator"),
-        32,
-    ));
-    let job_driver = Arc::new(JobDriver::new(
-        clock,
-        TokioRuntime,
-        meter,
-        StdDuration::from_secs(1),
-        StdDuration::from_secs(1),
-        10,
-        StdDuration::from_secs(60),
-        aggregation_job_driver.make_incomplete_job_acquirer_callback(
-            Arc::clone(&leader_aggregation_job_driver_datastore),
-            StdDuration::from_secs(600),
-        ),
-        aggregation_job_driver
-            .make_job_stepper_callback(Arc::clone(&leader_aggregation_job_driver_datastore), 10),
-    ));
-    let aggregation_job_driver_join_handle = tokio::spawn({
-        let short_circuit_stopper = short_circuit_stopper.clone();
-        let future = AssertUnwindSafe(leader_stopper.stop_future(job_driver.run())).catch_unwind();
-        async move {
-            let res: Result<Option<Infallible>, Box<dyn Any + Send + 'static>> = future.await;
-            match res {
-                Ok(_option) => {}
-                Err(panic) => {
-                    short_circuit_stopper.stop();
-                    resume_unwind(panic);
+    // Run several copies of the aggregation job driver.
+    let aggregation_job_driver_join_handles = (0..10)
+        .map(|_| {
+            let aggregation_job_driver = Arc::new(AggregationJobDriver::new(
+                reqwest::Client::new(),
+                &NoopMeterProvider::new().meter("janus_aggregator"),
+                32,
+            ));
+            let job_driver = Arc::new(JobDriver::new(
+                clock,
+                TokioRuntime,
+                meter.clone(),
+                StdDuration::from_secs(1),
+                StdDuration::from_secs(1),
+                10,
+                StdDuration::from_secs(60),
+                aggregation_job_driver.make_incomplete_job_acquirer_callback(
+                    Arc::clone(&leader_aggregation_job_driver_datastore),
+                    StdDuration::from_secs(600),
+                ),
+                aggregation_job_driver.make_job_stepper_callback(
+                    Arc::clone(&leader_aggregation_job_driver_datastore),
+                    10,
+                ),
+            ));
+            tokio::spawn({
+                let short_circuit_stopper = short_circuit_stopper.clone();
+                let future =
+                    AssertUnwindSafe(leader_stopper.stop_future(job_driver.run())).catch_unwind();
+                async move {
+                    let res: Result<Option<Infallible>, Box<dyn Any + Send + 'static>> =
+                        future.await;
+                    match res {
+                        Ok(_option) => {}
+                        Err(panic) => {
+                            short_circuit_stopper.stop();
+                            resume_unwind(panic);
+                        }
+                    }
                 }
-            }
-        }
-    });
+            })
+        })
+        .collect::<Vec<_>>();
 
     // Set up client.
     let client_parameters = ClientParameters::new(task_id, aggregator_endpoints, time_precision);
@@ -694,8 +702,10 @@ ON unnested_row_locks.pid = pg_stat_activity.pid",
     dump_locks_handle.await??;
     info!("waiting for aggregation job creator task to finish");
     aggregation_job_creator_join_handle.await?;
-    info!("waiting for aggregation job driver task to finish");
-    aggregation_job_driver_join_handle.await?;
+    info!("waiting for aggregation job driver tasks to finish");
+    for handle in aggregation_job_driver_join_handles {
+        handle.await?;
+    }
     info!("waiting for leader aggregator server to finish");
     leader_aggregator_server.await;
 
