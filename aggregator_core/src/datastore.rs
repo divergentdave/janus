@@ -4960,6 +4960,9 @@ pub enum Error {
     /// An invalid parameter was provided.
     #[error("invalid parameter: {0}")]
     InvalidParameter(&'static str),
+    /// An error occured when trying to ensure differential privacy.
+    #[error("differential privacy error: {0}")]
+    DifferentialPrivacy(String),
     /// An error occurred while manipulating timestamps or durations.
     #[error("{0}")]
     TimeOverflow(&'static str),

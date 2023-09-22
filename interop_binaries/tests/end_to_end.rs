@@ -691,7 +691,10 @@ async fn e2e_prio3_fixed16vec() {
     let result = run(
         "e2e_prio3_fixed16vec",
         QueryKind::TimeInterval,
-        json!({"type": "Prio3FixedPoint16BitBoundedL2VecSum", "length": "3"}),
+        json!({"type": "Prio3FixedPointBoundedL2VecSum",
+               "bitsize": "BitSize16",
+               "dp_strategy": json!( {"dp_strategy": "NoDifferentialPrivacy"}),
+               "length": "3"}),
         &[
             json!([
                 fp16_4_inv.to_string(),
@@ -728,7 +731,10 @@ async fn e2e_prio3_fixed32vec() {
     let result = run(
         "e2e_prio3_fixed32vec",
         QueryKind::TimeInterval,
-        json!({"type": "Prio3FixedPoint32BitBoundedL2VecSum", "length": "3"}),
+        json!({"type": "Prio3FixedPointBoundedL2VecSum",
+               "bitsize": "BitSize32",
+               "dp_strategy": json!( {"dp_strategy": "NoDifferentialPrivacy"}),
+               "length": "3"}),
         &[
             json!([
                 fp32_4_inv.to_string(),
@@ -765,7 +771,10 @@ async fn e2e_prio3_fixed64vec() {
     let result = run(
         "e2e_prio3_fixed64vec",
         QueryKind::TimeInterval,
-        json!({"type": "Prio3FixedPoint64BitBoundedL2VecSum", "length": "3"}),
+        json!({"type": "Prio3FixedPointBoundedL2VecSum",
+               "bitsize": "BitSize64",
+               "dp_strategy": json!( {"dp_strategy": "NoDifferentialPrivacy"}),
+               "length": "3"}),
         &[
             json!([
                 fp64_4_inv.to_string(),
@@ -802,7 +811,10 @@ async fn e2e_prio3_fixed16vec_fixed_size() {
     let result = run(
         "e2e_prio3_fixed16vec_fixed_size",
         QueryKind::FixedSize,
-        json!({"type": "Prio3FixedPoint16BitBoundedL2VecSum", "length": "3"}),
+        json!({"type": "Prio3FixedPointBoundedL2VecSum",
+               "bitsize": "BitSize16",
+               "dp_strategy": json!( {"dp_strategy": "NoDifferentialPrivacy"}),
+               "length": "3"}),
         &[
             json!([
                 fp16_4_inv.to_string(),
@@ -839,7 +851,10 @@ async fn e2e_prio3_fixed32vec_fixed_size() {
     let result = run(
         "e2e_prio3_fixed32vec_fixed_size",
         QueryKind::FixedSize,
-        json!({"type": "Prio3FixedPoint32BitBoundedL2VecSum", "length": "3"}),
+        json!({"type": "Prio3FixedPointBoundedL2VecSum",
+               "bitsize": "BitSize32",
+               "dp_strategy": json!( {"dp_strategy": "NoDifferentialPrivacy"}),
+               "length": "3"}),
         &[
             json!([
                 fp32_4_inv.to_string(),
@@ -876,7 +891,10 @@ async fn e2e_prio3_fixed64vec_fixed_size() {
     let result = run(
         "e2e_prio3_fixed64vec_fixed_size",
         QueryKind::FixedSize,
-        json!({"type": "Prio3FixedPoint64BitBoundedL2VecSum", "length": "3"}),
+        json!({"type": "Prio3FixedPointBoundedL2VecSum",
+               "bitsize": "BitSize64",
+               "dp_strategy": json!( {"dp_strategy": "NoDifferentialPrivacy"}),
+               "length": "3"}),
         &[
             json!([
                 fp64_4_inv.to_string(),

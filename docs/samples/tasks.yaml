@@ -12,6 +12,10 @@
   # The DAP query type. See below for an example of a fixed-size task
   query_type: TimeInterval
 
+  # The differential privacy strategy. Note that it has to be supported
+  # by the selected VDAF.
+  dp_strategy: !NoDifferentialPrivacy {}
+
   # The task's VDAF. Each VDAF requires its own set of parameters.
   vdaf: !Prio3Sum
     bits: 16
@@ -102,6 +106,7 @@
   query_type: !FixedSize
     max_batch_size: 100
     batch_time_window_size: null
+  dp_strategy: !NoDifferentialPrivacy {}
   vdaf: Prio3Count
   role: Helper
   vdaf_verify_key: "ZXtE4kLqtsCOr8h_pNUeoQ"
