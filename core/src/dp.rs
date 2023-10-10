@@ -172,18 +172,3 @@ impl AggregatorWithNoise<16, 16, NoDifferentialPrivacy>
         Ok(())
     }
 }
-
-// macro to use in dispatch
-
-/// If the first argument is non-empty, the `true` body is emitted,
-/// otherwise, the `false` body is emitted. Useful to generate different
-/// code in case an optional argument of an outer macro was given.
-#[macro_export]
-macro_rules! if_ident_exists {
-    ($token:ident, true => $body1:tt, false => $body2:tt) => {
-        $body1
-    };
-    (, true => $body1:tt, false => $body2:tt) => {
-        $body2
-    };
-}
