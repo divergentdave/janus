@@ -1103,7 +1103,7 @@ enum VdafOps {
 /// specify the VDAF's type, and the name of a const that will be set to the VDAF's verify key
 /// length, also for explicitly specifying type parameters.
 macro_rules! vdaf_ops_dispatch {
-    ($vdaf_ops:expr, ($vdaf:pat_param, $verify_key:pat_param, $Vdaf:ident, $VERIFY_KEY_LENGTH:ident, $DpStrategy:ident, $dp_strategy:ident) => $body:tt) => {
+    ($vdaf_ops:expr, ($vdaf:pat_param, $verify_key:pat_param, $Vdaf:ident, $VERIFY_KEY_LENGTH:ident, $dp_strategy:ident, $DpStrategy:ident) => $body:tt) => {
         match $vdaf_ops {
             crate::aggregator::VdafOps::Prio3Count(vdaf, verify_key) => {
                 let $vdaf = vdaf;
@@ -1251,7 +1251,7 @@ macro_rules! vdaf_ops_dispatch {
     };
 
     ($vdaf_ops:expr, ($vdaf:pat_param, $verify_key:pat_param, $Vdaf:ident, $VERIFY_KEY_LENGTH:ident) => $body:tt) => {
-        vdaf_ops_dispatch!($vdaf_ops, ($vdaf, $verify_key, $Vdaf, $VERIFY_KEY_LENGTH, _Unused, _unused) => $body)};
+        vdaf_ops_dispatch!($vdaf_ops, ($vdaf, $verify_key, $Vdaf, $VERIFY_KEY_LENGTH, _unused, _Unused) => $body)};
 }
 
 impl VdafOps {
@@ -2845,7 +2845,7 @@ impl VdafOps {
     ) -> Result<AggregateShare, Error> {
         match task.query_type() {
             task::QueryType::TimeInterval => {
-                vdaf_ops_dispatch!(self, (vdaf, _, VdafType, VERIFY_KEY_LENGTH, DpStrategyType, dp_strategy) => {
+                vdaf_ops_dispatch!(self, (vdaf, _, VdafType, VERIFY_KEY_LENGTH, dp_strategy, DpStrategyType) => {
                     Self::handle_aggregate_share_generic::<
                         VERIFY_KEY_LENGTH,
                         TimeInterval,
@@ -2856,7 +2856,7 @@ impl VdafOps {
                 })
             }
             task::QueryType::FixedSize { .. } => {
-                vdaf_ops_dispatch!(self, (vdaf, _, VdafType, VERIFY_KEY_LENGTH, DpStrategyType, dp_strategy) => {
+                vdaf_ops_dispatch!(self, (vdaf, _, VdafType, VERIFY_KEY_LENGTH, dp_strategy, DpStrategyType) => {
                     Self::handle_aggregate_share_generic::<
                         VERIFY_KEY_LENGTH,
                         FixedSize,

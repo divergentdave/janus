@@ -82,7 +82,7 @@ impl CollectionJobDriver {
     ) -> Result<(), Error> {
         match lease.leased().query_type() {
             task::QueryType::TimeInterval => {
-                vdaf_dispatch!(lease.leased().vdaf(), (vdaf, VdafType, VERIFY_KEY_LENGTH, DpStrategy, dp_strategy) => {
+                vdaf_dispatch!(lease.leased().vdaf(), (vdaf, VdafType, VERIFY_KEY_LENGTH, dp_strategy, DpStrategy) => {
                     self.step_collection_job_generic::<
                         VERIFY_KEY_LENGTH,
                         C,
@@ -94,7 +94,7 @@ impl CollectionJobDriver {
                 })
             }
             task::QueryType::FixedSize { .. } => {
-                vdaf_dispatch!(lease.leased().vdaf(), (vdaf, VdafType, VERIFY_KEY_LENGTH, DpStrategy, dp_strategy) => {
+                vdaf_dispatch!(lease.leased().vdaf(), (vdaf, VdafType, VERIFY_KEY_LENGTH, dp_strategy, DpStrategy) => {
                     self.step_collection_job_generic::<
                         VERIFY_KEY_LENGTH,
                         C,
