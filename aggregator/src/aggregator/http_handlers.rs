@@ -20,6 +20,7 @@ use opentelemetry::{
     KeyValue,
 };
 use prio::codec::Encode;
+use rand::random;
 use ring::digest::{digest, SHA256};
 use routefinder::Captures;
 use serde::Deserialize;
@@ -360,6 +361,10 @@ async fn upload<C: Clock>(
         Vec<u8>,
     ),
 ) -> Result<Status, Arc<Error>> {
+    if random::<bool>() {
+        panic!("Fault injection crash");
+    }
+
     validate_content_type(conn, Report::MEDIA_TYPE).map_err(Arc::new)?;
 
     let task_id = parse_task_id(&captures).map_err(Arc::new)?;
