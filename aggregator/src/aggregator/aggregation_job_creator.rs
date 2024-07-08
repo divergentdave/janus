@@ -298,7 +298,7 @@ impl<C: Clock + 'static> AggregationJobCreator<C> {
         fields(task_id = ?task.id()),
         err
     )]
-    async fn create_aggregation_jobs_for_task(
+    pub async fn create_aggregation_jobs_for_task(
         self: Arc<Self>,
         task: Arc<AggregatorTask>,
     ) -> anyhow::Result<bool> {
